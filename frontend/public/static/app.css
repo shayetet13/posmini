@@ -385,6 +385,8 @@ a.btn,a.pill{text-decoration:none;color:inherit}
 .thaiqr-timer.warn .tt{color:var(--rose)}
 .thaiqr-timer.warn .tbar i{background:var(--rose)}
 .display .thaiqr{width:min(44vw,38vh,380px)}
+/* phones and portrait tablets: the card is limited by width, not by a narrow 44vw */
+@media (orientation:portrait){.display .thaiqr{width:min(86vw,38vh,440px)}}
 .display .thaiqr .thaiqr-head img{height:clamp(30px,5vh,42px)}
 .display .thaiqr .thaiqr-pp img{height:clamp(32px,5vh,44px)}
 
