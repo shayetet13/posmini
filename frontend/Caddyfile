@@ -1,0 +1,48 @@
+{
+	admin off
+	auto_https off
+}
+
+:{$PORT:8080} {
+	# Pretty URLs -> the static page files.
+	redir / /pos 302
+	@loginpage {
+		path /login
+		method GET
+	}
+	rewrite @loginpage /login.html
+	rewrite /pos /pos.html
+	rewrite /settings /settings.html
+	rewrite /dashboard /dashboard.html
+	rewrite /display/* /display.html
+	rewrite /m/* /menu.html
+	rewrite /q/* /queue.html
+
+	# Everything dynamic goes to the backend. flush_interval -1 keeps live updates (SSE) flowing.
+	@backend {
+		path /api/* /events/* /img/* /shop.js
+	}
+	@form {
+		path /login /logout
+		method POST
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+	handle @backend {
+		reverse_proxy {$BACKEND_URL:http://backend.railway.internal:8080} {
+			flush_interval -1
+		}
+	}
+	handle @form {
+		reverse_proxy {$BACKEND_URL:http://backend.railway.internal:8080}
+	}
+	handle {
+		root * /srv
+		encode zstd gzip
+		header Cache-Control "no-cache"
+		header /static/*.png Cache-Control "public, max-age=86400"
+		file_server
+	}
+}

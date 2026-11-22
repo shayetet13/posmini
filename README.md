@@ -1,0 +1,70 @@
+# posmini
+
+POS ขนาดเล็กสำหรับร้านกาแฟ / ปาท่องโก๋ เขียนด้วย Rust (Axum + SQLite)
+
+- หน้าขาย (แคชเชียร์) + จอลูกค้า + ลูกค้าสแกน QR สั่งเอง + เลขคิว + เรียกคิวด้วยเสียงภาษาไทย
+- รับเงินสด (คีย์แพดคำนวณเงินทอน) และ QR พร้อมเพย์ ตรวจยอดเงินเข้าอัตโนมัติผ่าน API ของคุณเอง
+- พิมพ์บิลลูกค้า (บัตรคิว + ใบเสร็จรวมใบเดียว) และใบออเดอร์สำหรับร้านเป็นภาพ ภาษาไทยถูกต้องทุกเครื่องพิมพ์
+- คิวพิมพ์เรียงตามเลขคิว ไม่แซง ไม่หายเมื่อเครื่องพิมพ์ดับ
+- หน้าสรุปยอดขาย วัน/เดือน/ปี
+
+## โครงสร้าง
+
+```
+backend/    Rust API (+ ฝังหน้าเว็บไว้ใช้โหมดเครื่องเดียว)
+frontend/   หน้าเว็บ static (public/) + Caddy ที่ proxy /api ไป backend
+docker-compose.yml   รันเลย์เอาต์แบบคลาวด์ในเครื่อง
+start.bat   รันบน Windows ที่ร้านพร้อม Cloudflare Tunnel (โหมดเครื่องเดียว)
+```
+
+## รันในเครื่อง (โหมดเครื่องเดียว)
+
+```powershell
+copy .env.example .env     # แก้ ADMIN_PASSWORD และค่า PROMPTPAY_*
+cargo run --release        # http://localhost:8080/pos
+```
+
+หรือดับเบิลคลิก `start.bat` (รันเซิร์ฟเวอร์ + Cloudflare Tunnel) ในโหมดนี้เซิร์ฟเวอร์สั่งเครื่องพิมพ์ USB / Bluetooth ที่ต่อกับเครื่องเดียวกันได้โดยตรง
+
+## Deploy บน Railway (แยก frontend / backend)
+
+สร้างโปรเจกต์ Railway หนึ่งโปรเจกต์ มี 2 services จาก repo นี้ ทั้งสองใช้ **root ของ repo เป็น build context**
+และชี้ Dockerfile ด้วยตัวแปร `RAILWAY_DOCKERFILE_PATH`
+
+| Service    | `RAILWAY_DOCKERFILE_PATH` | Public domain | Volume |
+|------------|---------------------------|---------------|--------|
+| `backend`  | `backend/Dockerfile`      | ไม่ต้องเปิด (ใช้ private network) | `/data` |
+| `frontend` | `frontend/Dockerfile`     | เปิด (Generate Domain) | – |
+
+ผู้ใช้เข้าที่ domain ของ `frontend` เท่านั้น Caddy ส่ง `/api`, `/events`, `/img`, `/login` ต่อให้ backend ทาง
+`backend.railway.internal` เบราว์เซอร์จึงเห็นเป็นเว็บเดียว (คุกกี้ล็อกอินและ live update ทำงานบน iPad/Safari ได้)
+
+ตัวแปรของ `backend` (ใส่ใน Railway → Variables อย่าใส่ในโค้ด):
+
+| ตัวแปร | ค่า |
+|--------|-----|
+| `PORT` | `8080` |
+| `SHOP_SLUG`, `SHOP_NAME` | เช่น `main`, `ร้านของฉัน` |
+| `ADMIN_USER`, `ADMIN_PASSWORD` | ผู้ใช้และรหัสผ่านแคชเชียร์ (ตั้งรหัสที่เดาไม่ได้) |
+| `PAYMENT_API_BASE`, `PROMPTPAY_API_KEY`, `PROMPTPAY_ID` | ระบบตรวจยอดพร้อมเพย์ (ตั้งในหน้า ตั้งค่า > การรับเงิน แทนก็ได้) |
+
+ตัวแปรของ `frontend`: `BACKEND_URL=http://backend.railway.internal:8080` (ค่าเริ่มต้นตรงกับชื่อ service `backend` อยู่แล้ว)
+
+ฐานข้อมูล SQLite อยู่บน volume `/data` ของ backend (ต้องมี 1 replica) อย่าลืม backup ไฟล์ `/data/posmini.db` เป็นระยะ
+
+### เครื่องพิมพ์เมื่อเซิร์ฟเวอร์อยู่บนคลาวด์
+
+คลาวด์สั่งเครื่องพิมพ์ที่ร้านโดยตรงไม่ได้ จึงใช้ **สถานีพิมพ์ผ่านเบราว์เซอร์**:
+
+1. หน้า จัดการ > เครื่องพิมพ์ เลือกวิธีเชื่อมต่อ **ผ่านเบราว์เซอร์** แล้วบันทึก
+2. บนคอมพิวเตอร์ที่ต่อเครื่องพิมพ์ ใช้ **Chrome หรือ Edge** กด "เชื่อมต่อ Bluetooth / COM" (หรือ USB) แล้วเลือกเครื่องพิมพ์
+3. เปิดหน้า **ขาย** ค้างไว้บนเครื่องนั้นตอนขาย หน้านั้นจะรับคิวพิมพ์จากเซิร์ฟเวอร์มาสั่งเครื่องพิมพ์เอง
+   (iPad / Safari / Firefox เป็นสถานีพิมพ์ไม่ได้ แต่ใช้ขายและเรียกคิวได้ตามปกติ)
+
+บิลเป็นภาพ เซิร์ฟเวอร์วาดเองด้วยฟอนต์ไทยใน image (`fonts-thai-tlwg`) ไม่ต้องตั้ง code page
+
+## ทดสอบ
+
+```powershell
+cargo fmt; cargo clippy --all-targets -- -D warnings; cargo test
+```

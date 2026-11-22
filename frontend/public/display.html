@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="POS">
+<meta name="theme-color" content="#F6F0E6">
+<meta name="format-detection" content="telephone=no">
+<title>จอลูกค้า</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600&family=Prompt:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="display">
+  <header class="dhead">
+    <div class="dbrand"><div class="brandmark" aria-hidden="true" data-initial></div><span data-shop></span></div>
+    <div class="clock num" id="clock"></div>
+  </header>
+  <main class="stage" id="stage" aria-live="polite"></main>
+  <footer class="strip">
+    <span id="called">ขอบคุณที่อุดหนุน</span>
+    <button class="btn small" id="snd" type="button"></button>
+  </footer>
+</div>
+<div class="flash" id="flash" role="alert"></div>
+<script src="/shop.js"></script>
+<script>window.SLUG = location.pathname.split("/")[2] || window.SLUG;</script>
+<script src="/static/common.js"></script>
+<script src="/static/display.js"></script>
+</body>
+</html>
