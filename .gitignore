@@ -5,4 +5,4 @@
 *.db-shm
 *.db-wal
 print-dump*
-.railway/
+node_modules/

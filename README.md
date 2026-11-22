@@ -65,6 +65,31 @@ cargo run --release        # http://localhost:8080/pos
 
 ## ทดสอบ
 
-```powershell
-cargo fmt; cargo clippy --all-targets -- -D warnings; cargo test
+| ชุดทดสอบ | คำสั่ง | ครอบคลุม |
+|----------|--------|----------|
+| Rust (unit + HTTP end-to-end) | `cargo fmt --check; cargo clippy --all-targets -- -D warnings; cargo test` | ล็อกอิน, ออเดอร์เงินสด/เงินทอน, รูปแบบเลขคิว, คิวพิมพ์เรียงลำดับและสถานีพิมพ์ผ่านเบราว์เซอร์, การเรียกคิวแซง, โหมด API-only |
+| Frontend (node:test) | `node --test "frontend/tests/*.test.js"` | เครื่องคิดเลข, ทุกหน้าโหลดไฟล์ที่มีจริง, ไม่มี placeholder ค้าง, เส้นทาง Caddy, backend ฝังไฟล์ static ครบ |
+| Smoke test (ระบบที่รันอยู่) | `bash scripts/smoke.sh <url>` | หน้าเว็บ, proxy ไป backend, SSE, API ถูกป้องกัน (ใส่ `SMOKE_ADMIN_PASSWORD` เพื่อทดสอบหลังล็อกอิน และ `SMOKE_WRITE=1` เพื่อบันทึกการขายทดสอบ 1 รายการ — ใช้กับระบบทดสอบเท่านั้น) |
+
+## CI / CD
+
 ```
+git push → GitHub Actions (CI) → ผ่าน → Railway deploy backend + frontend → smoke test ระบบจริง
+```
+
+- `.github/workflows/ci.yml` รันทุกครั้งที่ push เข้า `main` และ pull request: ชุดทดสอบ Rust, ชุดทดสอบ frontend, build Docker ทั้งสอง image, ตรวจ Caddyfile, แล้วยก backend + frontend ขึ้นต่อกันเหมือนบน Railway และรัน smoke test พร้อมขายจริง 1 รายการ
+- Railway ตั้ง **Wait for CI** ไว้ ถ้า CI แดง commit นั้นจะไม่ถูก deploy
+- `.github/workflows/post-deploy.yml` รัน smoke test (อ่านอย่างเดียว) กับเว็บจริงหลัง Railway deploy สำเร็จ ตั้งที่อยู่ครั้งเดียวด้วย
+  `gh variable set SMOKE_URL --body https://<โดเมน frontend>` หรือสั่งรันเองจากแท็บ Actions
+- การตั้งค่า Railway อยู่ในโค้ดที่ `.railway/railway.ts` (Infrastructure as Code ของ Railway): สอง service, Dockerfile ของแต่ละตัว,
+  healthcheck `/health`, restart เมื่อล้ม, watch paths (แก้เฉพาะหน้าเว็บไม่ทำให้ build backend ใหม่), Wait for CI, volume `/data`
+  ตัวแปรลับ (`ADMIN_PASSWORD` ฯลฯ) **ไม่อยู่ในไฟล์** ตั้งใน Railway เอง
+
+```powershell
+npm install                 # ติดตั้ง SDK ของ Railway (ครั้งแรก)
+npm run railway:plan        # ดูว่าจะเปลี่ยนอะไรบน Railway
+npm run railway:apply       # ใช้การเปลี่ยนแปลง
+```
+
+> Windows: ถ้าติดตั้ง Railway CLI ผ่าน npm และเจอ error "requires Railway CLI 5.42.1 or newer" ให้ตั้งตัวแปร `_` ชี้ไปที่ตัว `.exe`
+> ก่อนรัน เช่น `$env:_ = "$env:APPDATA\npm\node_modules\@railway\cli\bin\railway.exe"`

@@ -27,6 +27,10 @@
 		method POST
 	}
 
+	# Same path the backend answers, so one Railway healthcheck setting fits both services.
+	handle /health {
+		respond "ok" 200
+	}
 	handle /healthz {
 		respond "ok" 200
 	}

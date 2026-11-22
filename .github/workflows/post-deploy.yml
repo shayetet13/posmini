@@ -1,0 +1,39 @@
+name: Post-deploy smoke test
+
+# After Railway reports a successful deployment, check the live site (read-only requests only).
+# Set the site address once:  gh variable set SMOKE_URL --body https://your-frontend.up.railway.app
+# It can also be run by hand from the Actions tab with a different address.
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Base URL to test (defaults to the SMOKE_URL repository variable)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Live site
+    if: github.event_name == 'workflow_dispatch' || github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    env:
+      TARGET: ${{ github.event.inputs.url || vars.SMOKE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the address is configured
+        run: |
+          if [ -z "$TARGET" ]; then
+            echo "::error::Set the SMOKE_URL repository variable (or pass a url) to the frontend address."
+            exit 1
+          fi
+      - name: Wait for the site to answer
+        run: |
+          for _ in $(seq 1 24); do
+            curl -fs --max-time 10 "$TARGET/healthz" >/dev/null && exit 0
+            sleep 5
+          done
+          echo "::error::$TARGET did not answer /healthz in 2 minutes"; exit 1
+      - run: bash scripts/smoke.sh "$TARGET"

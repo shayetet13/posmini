@@ -1,0 +1,103 @@
+name: CI
+
+# Runs on every push to main and on pull requests. Railway is set to "wait for CI", so a red
+# run here stops that commit from being deployed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (fmt, clippy, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Lets the image-printing tests draw real Thai text, like the production image does.
+      - name: Install Thai font
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-thai-tlwg
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  frontend:
+    name: Frontend (static checks, calculator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test "frontend/tests/*.test.js"
+
+  stack:
+    name: Docker images + smoke test
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    env:
+      ADMIN_PASSWORD: ci-only-password-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          load: true
+          tags: posmini-backend:ci
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: frontend/Dockerfile
+          load: true
+          tags: posmini-frontend:ci
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+
+      - name: Validate the Caddyfile
+        run: docker run --rm posmini-frontend:ci caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+      - name: Start the stack (backend behind the Caddy frontend, like on Railway)
+        run: |
+          docker network create posmini
+          docker run -d --name backend --network posmini \
+            -e SHOP_SLUG=main -e SHOP_NAME=CI -e ADMIN_USER=admin \
+            -e ADMIN_PASSWORD="$ADMIN_PASSWORD" -e COOKIE_SECURE=false \
+            posmini-backend:ci
+          docker run -d --name frontend --network posmini -p 8080:8080 \
+            -e BACKEND_URL=http://backend:8080 \
+            posmini-frontend:ci
+          for _ in $(seq 1 30); do
+            curl -fs http://localhost:8080/shop.js >/dev/null && exit 0
+            sleep 2
+          done
+          echo "stack did not come up"; docker logs backend; docker logs frontend; exit 1
+
+      - name: Smoke test (including a real cash sale)
+        env:
+          SMOKE_ADMIN_PASSWORD: ${{ env.ADMIN_PASSWORD }}
+          SMOKE_WRITE: "1"
+        run: bash scripts/smoke.sh http://localhost:8080
+
+      - name: Container logs
+        if: failure()
+        run: |
+          echo "--- backend"; docker logs backend || true
+          echo "--- frontend"; docker logs frontend || true

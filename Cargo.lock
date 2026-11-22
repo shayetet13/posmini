@@ -1266,6 +1266,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "futures-util",
+ "http-body-util",
  "printers",
  "qrcode",
  "rand",
@@ -1276,6 +1277,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-stream",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

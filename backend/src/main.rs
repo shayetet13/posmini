@@ -8,6 +8,8 @@ mod db;
 mod error;
 mod escpos;
 mod events;
+#[cfg(test)]
+mod http_tests;
 mod orders;
 mod pages;
 mod payment;
