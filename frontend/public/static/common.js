@@ -139,6 +139,27 @@
     return withPlaceholder ? h('span', { class: 'im ph', style: '--h:' + hueOf(p.name), 'aria-hidden': 'true' }, [...p.name][0] || '') : null;
   }
 
+  // Three low beeps for a warning the cashier must not miss (the browser only allows it after a tap).
+  function alertBeep() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = alertBeep.ctx || (alertBeep.ctx = new Ctx());
+      if (ctx.state === 'suspended') ctx.resume();
+      [0, 0.28, 0.56].forEach((at) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = 440;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime + at);
+        gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + at + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + at + 0.22);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(ctx.currentTime + at);
+        osc.stop(ctx.currentTime + at + 0.24);
+      });
+    } catch (_) { /* audio unavailable */ }
+  }
+
   // ---- menu: groups open like folders; on a phone every card is one big colour block
   // A phone is a small touch screen; tablets, iPads and computers keep the usual cards.
   // `?ui=phone` / `?ui=tablet` forces one (handy for trying it on a computer).
@@ -173,14 +194,20 @@
   // phones (the customer's own menu); the cashier's phone shows only the name.
   function menuTile(p, o) {
     const group = !!p.is_group;
+    const out = !group && !!p.sold_out;
     const qty = o.qty || 0;
     const style = p.color ? '--card-bg:' + p.color + ';--card-fg:' + inkOn(p.color) : null;
     return h('button', {
-      class: 'tile' + (qty ? ' sel' : '') + (group ? ' grp' : '') + (o.showPrice ? ' showp' : ''), type: 'button', style,
-      'aria-label': group ? 'เปิดกลุ่ม ' + p.name : p.name + ' ' + baht(p.price_satang),
-      onclick: () => (group ? o.onOpen(p.id) : o.onAdd(p.id)),
+      class: 'tile' + (qty ? ' sel' : '') + (group ? ' grp' : '') + (out ? ' out' : '') + (o.showPrice ? ' showp' : ''), type: 'button', style,
+      'aria-label': group ? 'เปิดกลุ่ม ' + p.name : p.name + ' ' + baht(p.price_satang) + (out ? ' หมดแล้ว' : ''),
+      onclick: () => {
+        if (group) o.onOpen(p.id);
+        else if (out) toast('“' + p.name + '” หมดแล้ว');
+        else o.onAdd(p.id);
+      },
     },
       qty > 0 && h('span', { class: 'in' }, '×' + qty),
+      out && h('span', { class: 'outtag' }, 'หมด'),
       productPic(p, true),
       h('div', { class: 'tbody' },
         h('span', { class: 'n' }, p.name),
@@ -477,5 +504,5 @@
   }
   setupInstall();
 
-  window.PM = { $, h, baht, api, upload, productPic, icon, isPhone, inkOn, menuLevel, menuCount, menuTile, menuCrumbs, qrCard, confirm: confirmBox, toast, listen, Voice, keepAwake };
+  window.PM = { $, h, baht, api, upload, productPic, icon, alertBeep, isPhone, inkOn, menuLevel, menuCount, menuTile, menuCrumbs, qrCard, confirm: confirmBox, toast, listen, Voice, keepAwake };
 })();

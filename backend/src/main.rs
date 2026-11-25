@@ -81,6 +81,7 @@ fn router(state: AppState) -> Router {
             post(admin::bulk_delete_products),
         )
         .route("/api/products/order", put(admin::reorder_products))
+        .route("/api/products/{id}/sold-out", put(api::set_sold_out))
         .route(
             "/api/products/{id}",
             put(admin::update_product).delete(admin::delete_product),
@@ -99,6 +100,7 @@ fn router(state: AppState) -> Router {
         .route("/api/settings/bot", get(admin::bot_status))
         .route("/api/settings/routes", get(admin::list_routes))
         .route("/api/me", get(staff::me))
+        .route("/api/pay/health", get(admin::pay_health))
         .route("/api/day/preview", get(closing::preview))
         .route("/api/day/close", post(closing::close))
         .route("/api/day/closes", get(closing::list))

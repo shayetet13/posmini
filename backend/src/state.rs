@@ -53,6 +53,7 @@ pub struct AppState {
     pay: Arc<RwLock<Arc<PayRuntime>>>,
     print: Arc<RwLock<Arc<PrintSettings>>>,
     bill: Arc<RwLock<Arc<BillSettings>>>,
+    pay_health: Arc<Mutex<Option<(Instant, Value)>>>,
     print_lock: Arc<tokio::sync::Mutex<()>>,
     qr_lock: Arc<tokio::sync::Mutex<()>>,
     print_wake: Arc<tokio::sync::Notify>,
@@ -86,6 +87,7 @@ impl AppState {
             pay: Arc::new(RwLock::new(Arc::new(pay))),
             print: Arc::new(RwLock::new(Arc::new(print))),
             bill: Arc::new(RwLock::new(Arc::new(bill))),
+            pay_health: Arc::default(),
             print_lock: Arc::default(),
             qr_lock: Arc::default(),
             print_wake: Arc::default(),
@@ -106,6 +108,20 @@ impl AppState {
     pub fn set_pay(&self, runtime: PayRuntime) {
         let mut guard = self.pay.write().unwrap_or_else(|e| e.into_inner());
         *guard = Arc::new(runtime);
+        // New settings: whatever was last known about the bot no longer counts.
+        *self.pay_health.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// The last answer about the bot, if it is younger than `max_age`.
+    pub fn cached_pay_health(&self, max_age: Duration) -> Option<Value> {
+        let slot = self.pay_health.lock().unwrap_or_else(|e| e.into_inner());
+        slot.as_ref()
+            .filter(|(at, _)| at.elapsed() < max_age)
+            .map(|(_, body)| body.clone())
+    }
+
+    pub fn store_pay_health(&self, body: Value) {
+        *self.pay_health.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), body));
     }
 
     /// Current printer settings; they can change while the server runs.

@@ -43,6 +43,8 @@ pub struct ProductView {
     parent_id: Option<i64>,
     /// A group holds other rows and cannot be ordered itself.
     is_group: bool,
+    /// Switched off on the till and the customer's menu (no stock today).
+    sold_out: bool,
     /// Card colour `#RRGGBB`.
     color: Option<String>,
     /// Cache-busting version of the product photo; `None` when there is no photo.
@@ -51,7 +53,7 @@ pub struct ProductView {
 
 async fn list_products(state: &AppState) -> ApiResult<Vec<ProductView>> {
     Ok(sqlx::query_as(
-        "SELECT id, name, category, price_satang, parent_id, is_group, color, \
+        "SELECT id, name, category, price_satang, parent_id, is_group, sold_out, color, \
          CASE WHEN image_mime IS NULL THEN NULL ELSE image_v END AS image_v \
          FROM products WHERE shop_id = ? AND active = 1 ORDER BY sort, id",
     )
@@ -224,6 +226,49 @@ async fn order_facts(state: &AppState, id: i64) -> ApiResult<(i64, String)> {
             .fetch_optional(&state.pool)
             .await?;
     row.ok_or(ApiError::NotFound)
+}
+
+#[derive(Deserialize)]
+pub struct SoldOutReq {
+    sold_out: bool,
+}
+
+/// The till marks an item as sold out (or back in stock): any logged-in account may, it is quick
+/// and reversible, and it is written to the audit log.
+pub async fn set_sold_out(
+    Authed(user): Authed,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<SoldOutReq>,
+) -> ApiResult<Json<Value>> {
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "SELECT name, is_group FROM products WHERE id = ? AND shop_id = ? AND active = 1",
+    )
+    .bind(id)
+    .bind(state.shop.id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (name, is_group) = row.ok_or(ApiError::NotFound)?;
+    if is_group == 1 {
+        return Err(ApiError::BadRequest("กลุ่มตั้งเป็นหมดไม่ได้ ให้ตั้งที่รายการข้างใน"));
+    }
+    sqlx::query("UPDATE products SET sold_out = ? WHERE id = ? AND shop_id = ?")
+        .bind(i64::from(req.sold_out))
+        .bind(id)
+        .bind(state.shop.id)
+        .execute(&state.pool)
+        .await?;
+    state.publish(Event::new("products", json!({})));
+    let detail = format!(
+        "{name} {}",
+        if req.sold_out {
+            "หมด"
+        } else {
+            "มีของแล้ว"
+        }
+    );
+    audit::record(&state, &user, action::SOLD_OUT, None, &detail).await;
+    Ok(Json(json!({ "ok": true })))
 }
 
 pub async fn confirm_order(

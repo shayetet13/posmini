@@ -9,6 +9,7 @@
   const count = () => lines().reduce((s, l) => s + l.qty, 0);
 
   function change(id, delta) {
+    if (delta > 0 && byId(id) && byId(id).sold_out) { toast('“' + byId(id).name + '” หมดแล้ว'); return; }
     state.wait = null; // the "please wait" notice was about the old cart
     const next = (state.cart.get(id) || 0) + delta;
     if (next <= 0) state.cart.delete(id); else state.cart.set(id, Math.min(next, 99));
@@ -84,6 +85,10 @@
   $('#cartmodal').addEventListener('click', (e) => { if (e.target.id === 'cartmodal') e.target.classList.remove('open'); });
 
   api('GET', '/api/m/' + window.SLUG + '/products')
-    .then((list) => { state.products = list; renderChips(); renderGrid(); renderBar(); })
+    .then((list) => {
+      state.products = list;
+      for (const id of [...state.cart.keys()]) if (!byId(id) || byId(id).sold_out) state.cart.delete(id);
+      renderChips(); renderGrid(); renderBar();
+    })
     .catch((err) => toast(err.message));
 })();

@@ -1600,3 +1600,219 @@ async fn a_backup_is_a_whole_working_copy_only_an_admin_can_take() {
         .clone();
     assert_eq!(audit["counts"]["backup"], 2, "both downloads are recorded");
 }
+
+// ----------------------------------------------- pretend servers, till warning, sold out
+
+/// A pretend verify API: lists one bot whose status the test can change, and counts the questions.
+struct MockVerify {
+    base: String,
+    bot_status: std::sync::Arc<std::sync::Mutex<String>>,
+    broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+async fn mock_verify() -> MockVerify {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    #[derive(Clone)]
+    struct Shared {
+        status: Arc<Mutex<String>>,
+        broken: Arc<AtomicBool>,
+        asked: Arc<AtomicUsize>,
+    }
+    let shared = Shared {
+        status: Arc::new(Mutex::new("online".to_string())),
+        broken: Arc::new(AtomicBool::new(false)),
+        asked: Arc::new(AtomicUsize::new(0)),
+    };
+    async fn bots(
+        axum::extract::State(s): axum::extract::State<Shared>,
+    ) -> (StatusCode, axum::Json<Value>) {
+        s.asked.fetch_add(1, Ordering::SeqCst);
+        if s.broken.load(Ordering::SeqCst) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "error": { "message": "boom" } })),
+            );
+        }
+        let status = s.status.lock().unwrap().clone();
+        (
+            StatusCode::OK,
+            axum::Json(
+                json!({ "data": [{ "id": "bot_1", "name": "nid", "enabled": true, "status": status }] }),
+            ),
+        )
+    }
+    let app = Router::new()
+        .route("/v1/bots", axum::routing::get(bots))
+        .with_state(shared.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    MockVerify {
+        base,
+        bot_status: shared.status,
+        broken: shared.broken,
+        asked: shared.asked,
+    }
+}
+
+fn pay_settings_for(base: &str) -> PaySettings {
+    PaySettings {
+        base_url: base.to_string(),
+        api_key: "test-key".into(),
+        promptpay_id: "0812345678".into(),
+        ..PaySettings::default()
+    }
+}
+
+#[tokio::test]
+async fn the_till_warning_follows_what_the_bot_is_doing() {
+    use std::sync::atomic::Ordering;
+    let mock = mock_verify().await;
+    let mut cashier_side = Client::new("pay-health", false).await;
+    cashier_side.login().await;
+
+    // A shop that never set automatic checking up has nothing to warn about.
+    let manual = cashier_side.get("/api/pay/health").await.json();
+    assert_eq!(manual["mode"], "manual");
+
+    let settings = pay_settings_for(&mock.base);
+    let switch_on = || {
+        cashier_side
+            .state
+            .set_pay(PayRuntime::build(pay_settings_for(&mock.base)).unwrap())
+    };
+    let _ = settings;
+    switch_on();
+    let ok = cashier_side.get("/api/pay/health").await.json();
+    assert_eq!(
+        (ok["mode"].as_str(), ok["ok"].as_bool()),
+        (Some("auto"), Some(true))
+    );
+
+    // Many tills asking within a few seconds cost the verify API one question, not one each.
+    for _ in 0..5 {
+        cashier_side.get("/api/pay/health").await;
+    }
+    assert_eq!(mock.asked.load(Ordering::SeqCst), 1);
+
+    // The bot goes down: new settings clear the remembered answer and the warning shows.
+    *mock.bot_status.lock().unwrap() = "offline".into();
+    switch_on();
+    let down = cashier_side.get("/api/pay/health").await.json();
+    assert_eq!(
+        (
+            down["mode"].as_str(),
+            down["ok"].as_bool(),
+            down["state"].as_str()
+        ),
+        (Some("auto"), Some(false), Some("offline"))
+    );
+    assert!(down["message"].as_str().unwrap().contains("ไม่ทำงาน"));
+
+    // The API itself failing is a warning too, not a silent pass.
+    mock.broken.store(true, Ordering::SeqCst);
+    switch_on();
+    let broken = cashier_side.get("/api/pay/health").await.json();
+    assert_eq!(
+        (broken["ok"].as_bool(), broken["state"].as_str()),
+        (Some(false), Some("error"))
+    );
+
+    // Needs a login like everything on the till.
+    let nobody = cashier_side.another_session();
+    assert_eq!(
+        nobody.get("/api/pay/health").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn a_sold_out_item_cannot_be_ordered_until_it_is_back() {
+    let (admin, cashier) = admin_and_cashier("sold-out").await;
+    let product = cashier.first_product().await;
+    let name = cashier.get("/api/products").await.json()[0]["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let toggle = |on: bool| {
+        let path = format!("/api/products/{product}/sold-out");
+        let cashier = &cashier;
+        async move { cashier.put(&path, json!({ "sold_out": on })).await }
+    };
+
+    assert_eq!(toggle(true).await.status, StatusCode::OK);
+    let listed = cashier.get("/api/products").await.json();
+    assert_eq!(listed[0]["sold_out"], true);
+    let refused = cashier.cash_order(product, None).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text());
+    assert!(refused.json()["error"].as_str().unwrap().contains(&name));
+    assert!(
+        cashier
+            .get("/api/orders/active")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "no half-made order is left behind"
+    );
+
+    assert_eq!(toggle(false).await.status, StatusCode::OK);
+    assert_eq!(
+        cashier.cash_order(product, None).await.status,
+        StatusCode::OK
+    );
+
+    // Only an item can be sold out, not a group; unknown ids are not found; it needs a login.
+    let group = admin
+        .post(
+            "/api/products",
+            json!({ "name": "กลุ่ม", "category": "", "price_satang": 0, "is_group": true }),
+        )
+        .await
+        .json()["id"]
+        .as_i64()
+        .unwrap();
+    let on_group = cashier
+        .put(
+            &format!("/api/products/{group}/sold-out"),
+            json!({ "sold_out": true }),
+        )
+        .await;
+    assert_eq!(on_group.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        cashier
+            .put("/api/products/99999/sold-out", json!({ "sold_out": true }))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let nobody = admin.another_session();
+    assert_eq!(
+        nobody
+            .put(
+                &format!("/api/products/{product}/sold-out"),
+                json!({ "sold_out": true })
+            )
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Both switches are in the record.
+    let audit = admin
+        .get(&format!(
+            "/api/dashboard?period=day&date={}",
+            today_bangkok()
+        ))
+        .await
+        .json()["audit"]
+        .clone();
+    assert_eq!(audit["counts"]["sold_out"], 2);
+}

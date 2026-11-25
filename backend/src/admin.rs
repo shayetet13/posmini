@@ -685,14 +685,14 @@ fn bot_verdict(health: &BotHealth) -> (&'static str, bool, String) {
     }
 }
 
-/// Whether the bot that reads bank notifications is running (asks the verify API, creates nothing).
-pub async fn bot_status(_admin: Admin, State(state): State<AppState>) -> Json<Value> {
+/// Asks the verify API whether the bot is running right now (creates nothing).
+async fn check_bot(state: &AppState) -> Value {
     let Some(client) = state.pay().client.clone() else {
-        return Json(json!({
+        return json!({
             "state": "not_configured",
             "ok": false,
             "message": "ยังกรอกข้อมูลระบบตรวจยอดไม่ครบ จึงเช็กบอทไม่ได้",
-        }));
+        });
     };
     let (code, ok, message) = match client.bot_health().await {
         Ok(health) => bot_verdict(&health),
@@ -701,7 +701,28 @@ pub async fn bot_status(_admin: Admin, State(state): State<AppState>) -> Json<Va
             ("error", false, format!("เช็กสถานะบอทไม่ได้: {err}"))
         }
     };
-    Json(json!({ "state": code, "ok": ok, "message": message }))
+    json!({ "state": code, "ok": ok, "message": message })
+}
+
+/// Whether the bot that reads bank notifications is running (a fresh check, for the settings page).
+pub async fn bot_status(_admin: Admin, State(state): State<AppState>) -> Json<Value> {
+    Json(check_bot(&state).await)
+}
+
+/// How long the till may reuse an answer, so many tills do not each ask the verify API.
+const PAY_HEALTH_TTL: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// For the till's warning banner. `mode` is "manual" when the shop never set automatic checking
+/// up (nothing to warn about) and "auto" when it did; then `ok` says whether it works right now.
+pub async fn pay_health(Authed(_): Authed, State(state): State<AppState>) -> Json<Value> {
+    if let Some(cached) = state.cached_pay_health(PAY_HEALTH_TTL) {
+        return Json(cached);
+    }
+    let mut body = check_bot(&state).await;
+    let auto = state.pay().client.is_some();
+    body["mode"] = json!(if auto { "auto" } else { "manual" });
+    state.store_pay_health(body.clone());
+    Json(body)
 }
 
 /// The word the settings page sends along, so a stray request can never wipe the sales.

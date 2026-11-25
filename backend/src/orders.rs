@@ -223,15 +223,18 @@ pub async fn create_order(
         if !(1..=MAX_QTY).contains(&item.qty) {
             return Err(ApiError::BadRequest("จำนวนสินค้าไม่ถูกต้อง"));
         }
-        let product: Option<(String, i64)> = sqlx::query_as(
-            "SELECT name, price_satang FROM products \
+        let product: Option<(String, i64, i64)> = sqlx::query_as(
+            "SELECT name, price_satang, sold_out FROM products \
              WHERE id = ? AND shop_id = ? AND active = 1 AND is_group = 0",
         )
         .bind(item.product_id)
         .bind(state.shop.id)
         .fetch_optional(&state.pool)
         .await?;
-        let (name, price) = product.ok_or(ApiError::BadRequest("ไม่พบสินค้า"))?;
+        let (name, price, sold_out) = product.ok_or(ApiError::BadRequest("ไม่พบสินค้า"))?;
+        if sold_out == 1 {
+            return Err(ApiError::Conflict(format!("“{name}” หมดแล้ว")));
+        }
         lines.push((item.product_id, name, price, item.qty));
     }
     let total: i64 = lines.iter().map(|(_, _, price, qty)| price * qty).sum();

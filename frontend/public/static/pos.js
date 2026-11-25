@@ -57,6 +57,7 @@
   }
 
   function addToCart(id, delta) {
+    if (delta > 0 && productById(id) && productById(id).sold_out) { toast('“' + productById(id).name + '” หมดแล้ว'); return; }
     const next = (state.cart.get(id) || 0) + delta;
     if (next <= 0) state.cart.delete(id);
     else state.cart.set(id, Math.min(next, 99));
@@ -557,11 +558,60 @@
 
   async function loadProducts() {
     try { state.products = await api('GET', '/api/products'); } catch (err) { toast(err.message); return; }
-    for (const id of [...state.cart.keys()]) if (!productById(id)) state.cart.delete(id);
+    for (const id of [...state.cart.keys()]) {
+      const p = productById(id);
+      if (!p) state.cart.delete(id);
+      else if (p.sold_out) { state.cart.delete(id); toast('“' + p.name + '” หมดแล้ว เอาออกจากตะกร้าให้'); }
+    }
     if (state.cat !== ALL && !state.products.some((p) => p.parent_id == null && p.category === state.cat)) state.cat = ALL;
     // A group that was deleted (or emptied elsewhere) must not leave us standing inside it.
     if (state.path.some((id) => !productById(id))) state.path = [];
     renderChips(); renderGrid(); renderCart();
+  }
+
+  // ---- payment-check warning: a red bar (and three beeps) when the bank check cannot work
+  const PAY_CHECK_MS = 30000;
+  const ALERT_AGAIN_MS = 300000;
+  let payBad = false;
+  let lastAlert = 0;
+
+  async function checkPay() {
+    let s;
+    try { s = await api('GET', '/api/pay/health'); } catch (_) { return; }
+    const bad = s.mode === 'auto' && !s.ok;
+    const box = $('#paybanner');
+    box.hidden = !bad;
+    if (bad) {
+      box.replaceChildren(h('b', null, 'ตรวจยอดอัตโนมัติใช้ไม่ได้'),
+        h('span', null, ' ' + s.message + ' · ลูกค้าที่โอนแล้วต้องกด “ยืนยันรับเงินแล้ว” เอง และลูกค้าที่สแกนสั่งเองจะสั่งไม่ได้จนกว่าจะแก้'));
+      if (!payBad || Date.now() - lastAlert > ALERT_AGAIN_MS) { PM.alertBeep(); lastAlert = Date.now(); }
+    } else if (payBad) toast('ตรวจยอดอัตโนมัติกลับมาใช้ได้แล้ว');
+    payBad = bad;
+  }
+
+  // ---- sold out: one switch per menu item, for the cashier in the middle of a rush
+  function openSoldOut() {
+    const items = state.products.filter((p) => !p.is_group);
+    const rows = () => items.map((p) => {
+      const box = h('input', { type: 'checkbox', class: 'pcheck', checked: !!p.sold_out, 'aria-label': p.name + ' หมด' });
+      box.addEventListener('change', async () => {
+        try {
+          await api('PUT', '/api/products/' + p.id + '/sold-out', { sold_out: box.checked });
+          p.sold_out = box.checked;
+          if (box.checked) state.cart.delete(p.id);
+          renderGrid(); renderCart();
+        } catch (err) { box.checked = !box.checked; toast(err.message); }
+      });
+      return h('label', { class: 'prow selectable' }, box, h('div', { class: 'pinfo' }, h('div', { class: 'pname' }, p.name)), h('span', { class: 'muted' }, 'หมด'));
+    });
+    const overlay = h('div', { class: 'modal open' },
+      h('div', { class: 'sheet left', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'เมนูที่หมด' },
+        h('h3', { style: 'margin-bottom:4px' }, 'เมนูที่หมดวันนี้'),
+        h('p', { class: 'muted', style: 'margin:0 0 8px' }, 'ติ๊กช่อง “หมด” แล้วเมนูนั้นสั่งไม่ได้ทั้งหน้าขายและหน้าลูกค้า เอาติ๊กออกเมื่อมีของ'),
+        h('div', { style: 'max-height:55vh;overflow:auto' }, ...(items.length ? rows() : [h('p', { class: 'muted' }, 'ยังไม่มีสินค้า')])),
+        h('div', { class: 'btns' }, h('button', { class: 'btn primary block', type: 'button', onclick: () => overlay.remove() }, 'เสร็จ'))));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.append(overlay);
   }
 
   async function init() {
@@ -586,6 +636,7 @@
   $('#payCash').addEventListener('click', openCash);
   $('#payQr').addEventListener('click', () => pay('promptpay'));
   $('#screens').addEventListener('click', openScreens);
+  $('#soldout').addEventListener('click', openSoldOut);
   ['paymodal', 'scrmodal'].forEach((id) => $('#' + id).addEventListener('click', (e) => {
     if (e.target.id === id) { if (id === 'paymodal') closePay(); else e.target.classList.remove('open'); }
   }));
@@ -612,4 +663,7 @@
   }, () => { loadOrders(); loadProducts(); refreshDisplays(); loadPrintq(); });
 
   init();
+  checkPay();
+  setInterval(() => { if (document.visibilityState === 'visible') checkPay(); }, PAY_CHECK_MS);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkPay(); });
 })();

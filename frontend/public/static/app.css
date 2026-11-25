@@ -695,3 +695,11 @@ a.btn,a.pill{text-decoration:none;color:inherit}
 .sortitem.dragging .drag{cursor:grabbing}
 
 .audit-chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}
+
+/* ---- warning bar on the till, and sold-out cards -------------------------------------------- */
+.paybanner{background:#C73E3A;color:#fff;padding:12px 18px;margin:0 22px 8px;border-radius:14px;font-size:17px;line-height:1.4;box-shadow:0 6px 16px -8px rgba(199,62,58,.8)}
+.paybanner[hidden]{display:none}
+.paybanner b{font-size:19px}
+.tile.out{opacity:.5;filter:grayscale(.9)}
+.tile.out .add{display:none}
+.outtag{position:absolute;top:8px;right:8px;background:#1b1410;color:#fff;font-weight:700;font-size:14px;padding:2px 10px;border-radius:999px;z-index:1}
