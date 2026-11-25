@@ -737,3 +737,9 @@ a.btn,a.pill{text-decoration:none;color:inherit}
 .qb.del{margin-left:4px;background:transparent;box-shadow:none;color:var(--danger,#B3372F)}
 .qb.del svg{stroke:currentColor}
 .qb.del:hover{background:rgba(179,55,47,.12)}
+
+/* ---- slip rows open a detail sheet ---------------------------------------------------------- */
+.slip.tap{cursor:pointer;transition:border-color .12s,background .12s}
+.slip.tap:hover,.slip.tap:focus-visible{border-color:var(--jade);background:var(--paper);outline:0}
+.slip.tap:active{transform:scale(.995)}
+.slip-v{text-align:right;overflow-wrap:anywhere}

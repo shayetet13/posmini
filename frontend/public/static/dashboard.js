@@ -248,9 +248,46 @@
     return day + '/' + m + ' ' + time.slice(0, 5);
   }
 
+  // Tapping a slip opens everything the shop kept about that payment.
+  function openSlip(s) {
+    const items = s.items || [];
+    const itemsSum = items.reduce((sum, i) => sum + (i.price || 0) * i.qty, 0);
+    const off = itemsSum - s.amount_satang;
+    const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    const line = (k, v) => (v == null || v === '' ? null : h('div', { class: 'brow' }, h('span', null, k), h('b', { class: 'num slip-v' }, v)));
+    const overlay = h('div', { class: 'modal open close-modal' },
+      h('div', { class: 'sheet left', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'รายละเอียดสลิป' },
+        h('h3', { style: 'margin-bottom:4px' }, 'สลิปการโอน ' + (s.queue_label || '')),
+        h('span', { class: 'badge ' + (s.verified ? 'ok' : 'warn') }, s.verified ? '✓ ตรวจยอดแล้ว' : 'พนักงานกดยืนยัน'),
+        h('div', { style: 'margin-top:10px' },
+          line('วันที่ เวลา', s.paid_at),
+          line('ออเดอร์', '#' + s.order_id),
+          line('คิว', s.queue_label),
+          line('จำนวนเงิน', baht(s.amount_satang)),
+          line('ธนาคาร', s.bank ? (BANKS[s.bank] || String(s.bank).toUpperCase()) : null),
+          line('ผู้โอน', s.payer_name),
+          line('เลขอ้างอิง', s.reference),
+          line('วิธีรับเงิน', s.verified ? 'ระบบตรวจยอดเงินเข้าเอง' : 'พนักงานกดยืนยันเอง ไม่มีข้อมูลจากธนาคาร')),
+        h('h4', { style: 'margin:14px 0 4px' }, 'รายการที่ซื้อ'),
+        items.length ? h('div', null,
+          ...items.map((i) => h('div', { class: 'brow' },
+            h('span', null, i.name + ' × ' + i.qty + (i.price ? ' (' + baht(i.price) + ')' : '')),
+            h('b', { class: 'num' }, i.price ? baht(i.price * i.qty) : ''))),
+          off > 0 ? h('div', { class: 'brow' }, h('span', null, 'ส่วนลด'), h('b', { class: 'num' }, '−' + baht(off))) : null,
+          h('div', { class: 'brow' }, h('b', null, 'รวมที่โอน'), h('b', { class: 'num' }, baht(s.amount_satang))))
+          : h('p', { class: 'muted' }, 'ไม่มีรายการสินค้าเก็บไว้'),
+        h('div', { class: 'btns' }, h('button', { class: 'btn primary block', type: 'button', onclick: close }, 'ปิด'))));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.append(overlay);
+  }
+
   function slipRow(s) {
     const items = (s.items || []).map((i) => i.name + ' ×' + i.qty).join(', ');
-    return h('li', { class: 'slip' },
+    return h('li', { class: 'slip tap', role: 'button', tabindex: '0', 'aria-label': 'ดูรายละเอียดสลิป ' + (s.queue_label || '') + ' ' + baht(s.amount_satang),
+      onclick: () => openSlip(s),
+      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSlip(s); } } },
       h('div', { class: 'slip-top' },
         h('span', { class: 'slip-time num' }, slipTime(s.paid_at)),
         h('b', { class: 'slip-q num' }, s.queue_label || '—'),
