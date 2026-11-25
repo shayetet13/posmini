@@ -56,8 +56,7 @@
           h('div', { class: 'stepper' },
             h('button', { class: 'qb', type: 'button', 'aria-label': 'ลด ' + p.name, onclick: () => addToCart(p.id, -1) }, '−'),
             h('span', { class: 'qty num' }, qty),
-            h('button', { class: 'qb', type: 'button', 'aria-label': 'เพิ่ม ' + p.name, onclick: () => addToCart(p.id, 1) }, '+'),
-            h('button', { class: 'qb del', type: 'button', 'aria-label': 'ลบ ' + p.name + ' ออกจากตะกร้า', title: 'ลบรายการนี้', onclick: () => addToCart(p.id, -99) }, PM.icon('trash', 16)))))
+            h('button', { class: 'qb', type: 'button', 'aria-label': 'เพิ่ม ' + p.name, onclick: () => addToCart(p.id, 1) }, '+'))))
       : [h('div', { class: 'cart-empty' }, PM.icon('bag', 22), h('span', null, 'ยังไม่มีสินค้า แตะเมนูเพื่อเริ่มขาย'))]));
     $('#cart').classList.toggle('empty', !lines.length);
     renderExtras(lines.length > 0);
