@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::{
     admin::clean_text,
-    auth::Authed,
+    auth::{Admin, Authed},
     bill::{self, BillSettings},
     error::{ApiError, ApiResult},
     escpos::is_zero_width,
@@ -112,7 +112,7 @@ pub async fn get_settings(_auth: Authed, State(state): State<AppState>) -> Json<
 }
 
 pub async fn put_settings(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Json(req): Json<PrintSettingsReq>,
 ) -> ApiResult<Json<Value>> {
@@ -124,7 +124,7 @@ pub async fn put_settings(
 }
 
 /// Printers installed in Windows and serial (COM) ports, for the settings dropdowns.
-pub async fn targets(_auth: Authed) -> Json<Value> {
+pub async fn targets(_admin: Admin) -> Json<Value> {
     let ports = printing::list_com_ports().await;
     let printers = tokio::task::spawn_blocking(printing::list_printers)
         .await
@@ -151,7 +151,7 @@ fn failed(err: &anyhow::Error) -> ApiError {
 }
 
 pub async fn test(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Json(req): Json<TestReq>,
 ) -> ApiResult<Json<Value>> {
@@ -362,12 +362,12 @@ fn bill_view(bill: &BillSettings, shop: &str) -> Value {
     })
 }
 
-pub async fn get_bill(_auth: Authed, State(state): State<AppState>) -> Json<Value> {
+pub async fn get_bill(_admin: Admin, State(state): State<AppState>) -> Json<Value> {
     Json(bill_view(&state.bill(), &state.shop.name))
 }
 
 pub async fn put_bill(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Json(req): Json<BillReq>,
 ) -> ApiResult<Json<Value>> {
@@ -389,7 +389,7 @@ pub struct PreviewReq {
 
 /// The bill exactly as it would print (a picture), for the wording currently typed in.
 pub async fn preview(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Json(req): Json<PreviewReq>,
 ) -> ApiResult<Response> {

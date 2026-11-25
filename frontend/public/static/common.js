@@ -29,6 +29,8 @@
       credentials: 'same-origin',
     });
     if (res.status === 401 && ['/pos', '/settings', '/dashboard'].includes(location.pathname)) { location.href = '/login'; return new Promise(() => {}); }
+    // Logged in as a cashier on an admin page: back to the till.
+    if (res.status === 403 && ['/settings', '/dashboard'].includes(location.pathname)) { location.href = '/pos'; return new Promise(() => {}); }
     let data = null;
     try { data = await res.json(); } catch (_) { /* empty body */ }
     if (!res.ok) {
@@ -405,6 +407,11 @@
         + '<button class="rail-item" id="calcBtn" type="button" aria-label="เครื่องคิดเลข">' + svg(NAV_ICONS.calc) + '<span>คิดเลข</span></button>'
         + '<form class="railout" method="post" action="/logout"><button type="submit" aria-label="ออกจากระบบ">' + svg(NAV_ICONS.logout) + '<span>ออก</span></button></form></nav>';
       nav.querySelector('.brandmark').textContent = window.SHOP_INITIAL || '';
+      // A cashier does not see the takings or the setup: take those links out of the rail.
+      fetch('/api/me', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).then((me) => {
+        window.ME = me;
+        if (me && me.role !== 'admin') nav.querySelectorAll('a[href^="/dashboard"], a[href^="/settings"]').forEach((a) => a.remove());
+      }).catch(() => { /* the rail just stays complete */ });
     }
   }
   bootPage();

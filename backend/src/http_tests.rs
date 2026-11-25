@@ -149,9 +149,40 @@ impl Client {
     }
 
     async fn login(&mut self) {
-        let form = format!("username=admin&password={ADMIN_PASSWORD}");
+        self.login_as("admin", ADMIN_PASSWORD).await;
+    }
+
+    /// A second visitor to the same app (same router and database) with no login yet.
+    fn another_session(&self) -> Client {
+        Client {
+            app: self.app.clone(),
+            state: self.state.clone(),
+            cookie: None,
+            db: std::env::temp_dir().join("posmini-borrowed-session.db"),
+        }
+    }
+
+    /// Logs in as any account; panics if the login is refused.
+    async fn login_as(&mut self, username: &str, password: &str) {
+        assert!(
+            self.try_login(username, password).await,
+            "login refused for {username}"
+        );
+    }
+
+    /// Whether the login worked (a good one sets the cookie, a bad one goes back to the form).
+    async fn try_login(&mut self, username: &str, password: &str) -> bool {
+        let form = format!("username={username}&password={password}");
         let res = self.send(Method::POST, "/login", None, Some(&form)).await;
         assert_eq!(res.status, StatusCode::SEE_OTHER);
+        let went_to = res
+            .headers
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if went_to.contains("error") {
+            return false;
+        }
         let cookie = res
             .headers
             .get(header::SET_COOKIE)
@@ -162,6 +193,7 @@ impl Client {
             .unwrap()
             .to_string();
         self.cookie = Some(cookie);
+        true
     }
 
     /// Prints with the browser station and as plain text, so no font or printer is needed.
@@ -1082,4 +1114,226 @@ async fn calling_a_queue_out_of_turn_needs_confirmation() {
     assert_eq!(status_of("A001"), "called");
     assert_eq!(status_of("A002"), "paid");
     assert_eq!(status_of("A003"), "called");
+}
+
+// ------------------------------------------------------------------- staff and audit
+
+/// An admin client plus a second client logged in as a fresh cashier account.
+async fn admin_and_cashier(name: &str) -> (Client, Client) {
+    let mut admin = Client::new(name, false).await;
+    admin.login().await;
+    let made = admin
+        .post(
+            "/api/users",
+            json!({ "username": "somchai", "password": "cashier-pass-1", "role": "cashier" }),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.text());
+    let mut cashier = admin.another_session();
+    cashier.login_as("somchai", "cashier-pass-1").await;
+    (admin, cashier)
+}
+
+fn today_bangkok() -> String {
+    (chrono::Utc::now() + chrono::Duration::hours(7))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_cashier_can_sell_but_not_reach_setup_takings_or_accounts() {
+    let (admin, cashier) = admin_and_cashier("roles").await;
+    let me = cashier.get("/api/me").await.json();
+    assert_eq!(me["username"], "somchai");
+    assert_eq!(me["role"], "cashier");
+    assert_eq!(admin.get("/api/me").await.json()["role"], "admin");
+
+    // What a till needs works.
+    let product = cashier.first_product().await;
+    assert_eq!(
+        cashier.cash_order(product, None).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        cashier.get("/api/orders/active").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        cashier.get("/api/print/settings").await.status,
+        StatusCode::OK
+    );
+
+    // What sets the shop up, shows the takings or manages people does not.
+    let dashboard = format!("/api/dashboard?period=day&date={}", today_bangkok());
+    let new_product = json!({ "name": "x", "category": "", "price_satang": 100 });
+    let reset = json!({ "confirm": "reset-sales" });
+    for (what, status) in [
+        ("dashboard", cashier.get(&dashboard).await.status),
+        ("users", cashier.get("/api/users").await.status),
+        ("bot status", cashier.get("/api/settings/bot").await.status),
+        (
+            "bill settings",
+            cashier.get("/api/bill/settings").await.status,
+        ),
+        (
+            "new product",
+            cashier.post("/api/products", new_product).await.status,
+        ),
+        (
+            "reset",
+            cashier
+                .post("/api/settings/reset-sales", reset)
+                .await
+                .status,
+        ),
+    ] {
+        assert_eq!(status, StatusCode::FORBIDDEN, "{what}");
+    }
+    // The admin can, and a cashier only learns whether automatic checking is on.
+    assert_eq!(admin.get(&dashboard).await.status, StatusCode::OK);
+    let settings = cashier.get("/api/settings").await.json();
+    let keys: Vec<&String> = settings.as_object().unwrap().keys().collect();
+    assert_eq!(keys, vec!["verify_active"]);
+    assert!(
+        admin
+            .get("/api/settings")
+            .await
+            .json()
+            .get("base_url")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn account_rules_keep_the_shop_manageable() {
+    let (admin, cashier) = admin_and_cashier("account-rules").await;
+    let users = admin.get("/api/users").await.json();
+    let id_of = |name: &str| {
+        users
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["username"] == name)
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap()
+    };
+    let (admin_id, cashier_id) = (id_of("admin"), id_of("somchai"));
+
+    let dup = json!({ "username": "somchai", "password": "another-pass-1", "role": "cashier" });
+    assert_eq!(
+        admin.post("/api/users", dup).await.status,
+        StatusCode::CONFLICT
+    );
+    for bad in [
+        json!({ "username": "ab", "password": "long-enough-1", "role": "cashier" }),
+        json!({ "username": "has space", "password": "long-enough-1", "role": "cashier" }),
+        json!({ "username": "okname", "password": "short", "role": "cashier" }),
+        json!({ "username": "okname", "password": "long-enough-1", "role": "boss" }),
+    ] {
+        assert_eq!(
+            admin.post("/api/users", bad).await.status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    // Nobody can lock the shop out of its own setup.
+    let delete_self = admin
+        .send(
+            Method::DELETE,
+            &format!("/api/users/{admin_id}"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(delete_self.status, StatusCode::BAD_REQUEST);
+    let demote = admin
+        .put(
+            &format!("/api/users/{admin_id}"),
+            json!({ "role": "cashier" }),
+        )
+        .await;
+    assert_eq!(demote.status, StatusCode::BAD_REQUEST, "{}", demote.text());
+
+    // Switching an account off ends its session at once and keeps it from logging in again.
+    assert_eq!(cashier.get("/api/me").await.status, StatusCode::OK);
+    let off = admin
+        .put(
+            &format!("/api/users/{cashier_id}"),
+            json!({ "active": false }),
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text());
+    assert_eq!(
+        cashier.get("/api/me").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let mut again = admin.another_session();
+    assert!(
+        !again.try_login("somchai", "cashier-pass-1").await,
+        "switched off"
+    );
+
+    // Back on, with a new password: only the new one works.
+    let back = json!({ "active": true, "password": "brand-new-pass-2" });
+    admin.put(&format!("/api/users/{cashier_id}"), back).await;
+    assert!(!again.try_login("somchai", "cashier-pass-1").await);
+    assert!(again.try_login("somchai", "brand-new-pass-2").await);
+}
+
+#[tokio::test]
+async fn manual_confirms_and_cancellations_are_recorded_with_who_did_them() {
+    let (admin, cashier) = admin_and_cashier("audit").await;
+    let product = cashier.first_product().await;
+    let promptpay =
+        || json!({ "method": "promptpay", "items": [{ "product_id": product, "qty": 1 }] });
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(
+            cashier.post("/api/orders", promptpay()).await.json()["id"]
+                .as_i64()
+                .unwrap(),
+        );
+    }
+    let act = |id: i64, what: &str| {
+        let path = format!("/api/orders/{id}/{what}");
+        let cashier = &cashier;
+        async move { cashier.post(&path, json!({})).await }
+    };
+    assert_eq!(act(ids[0], "confirm").await.status, StatusCode::OK);
+    assert_eq!(act(ids[1], "confirm").await.status, StatusCode::OK);
+    // One order cancelled before it was paid, one after.
+    assert_eq!(act(ids[2], "cancel").await.status, StatusCode::OK);
+    assert_eq!(act(ids[1], "cancel").await.status, StatusCode::OK);
+    // Confirming an order that is already paid is not a second record.
+    act(ids[0], "confirm").await;
+
+    let dashboard = format!("/api/dashboard?period=day&date={}", today_bangkok());
+    let audit = admin.get(&dashboard).await.json()["audit"].clone();
+    assert_eq!(audit["counts"]["confirm_manual"], 2);
+    assert_eq!(audit["counts"]["cancel"], 1);
+    assert_eq!(audit["counts"]["cancel_paid"], 1);
+    let rows = audit["rows"].as_array().unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r["action"] == "confirm_manual")
+        .unwrap();
+    assert_eq!(row["actor"], "somchai");
+    assert_eq!(row["role"], "cashier");
+    assert!(
+        row["detail"].as_str().unwrap().contains('฿'),
+        "the amount is in the line"
+    );
+
+    // The reset and the account changes are in the record too, and the record survives the reset.
+    admin
+        .post(
+            "/api/settings/reset-sales",
+            json!({ "confirm": "reset-sales" }),
+        )
+        .await;
+    let after = admin.get(&dashboard).await.json()["audit"].clone();
+    assert_eq!(after["counts"]["reset_sales"], 1);
+    assert_eq!(after["counts"]["staff_added"], 1);
+    assert_eq!(after["counts"]["confirm_manual"], 2);
 }

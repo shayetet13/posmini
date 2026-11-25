@@ -11,7 +11,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Redirect, Response},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{error::ApiError, state::AppState};
 
@@ -44,11 +44,46 @@ fn session_id(headers: &HeaderMap) -> Option<String> {
         .map(|(_, value)| value.to_string())
 }
 
-pub fn is_authed(state: &AppState, headers: &HeaderMap) -> bool {
-    session_id(headers).is_some_and(|sid| state.session_valid(&sid))
+/// What an account may do. A cashier sells, takes money and calls queues; everything that sets the
+/// shop up, shows the takings or changes who can log in needs an admin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Admin,
+    Cashier,
 }
 
-pub struct Authed;
+impl Role {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "admin" => Some(Self::Admin),
+            "cashier" => Some(Self::Cashier),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Cashier => "cashier",
+        }
+    }
+}
+
+/// The account behind a login session.
+#[derive(Clone, Debug, Serialize)]
+pub struct SessionUser {
+    pub id: i64,
+    pub username: String,
+    pub role: Role,
+}
+
+pub fn session_user(state: &AppState, headers: &HeaderMap) -> Option<SessionUser> {
+    session_id(headers).and_then(|sid| state.session_user(&sid))
+}
+
+/// Any logged-in account.
+pub struct Authed(pub SessionUser);
 
 impl FromRequestParts<AppState> for Authed {
     type Rejection = ApiError;
@@ -57,10 +92,26 @@ impl FromRequestParts<AppState> for Authed {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        if is_authed(state, &parts.headers) {
-            Ok(Self)
-        } else {
-            Err(ApiError::Unauthorized)
+        session_user(state, &parts.headers)
+            .map(Self)
+            .ok_or(ApiError::Unauthorized)
+    }
+}
+
+/// A logged-in account with the admin role (a cashier gets 403).
+pub struct Admin(pub SessionUser);
+
+impl FromRequestParts<AppState> for Admin {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        match session_user(state, &parts.headers) {
+            Some(user) if user.role == Role::Admin => Ok(Self(user)),
+            Some(_) => Err(ApiError::Forbidden),
+            None => Err(ApiError::Unauthorized),
         }
     }
 }
@@ -109,19 +160,23 @@ pub async fn login(
     if state.is_limited(&key, LOGIN_MAX_FAILURES, LOGIN_WINDOW) {
         return Err(ApiError::TooMany);
     }
-    let stored: Option<String> =
-        sqlx::query_scalar("SELECT password_hash FROM users WHERE shop_id = ? AND username = ?")
-            .bind(state.shop.id)
-            .bind(form.username.trim())
-            .fetch_optional(&state.pool)
-            .await?;
+    let account: Option<(i64, String, String, String)> = sqlx::query_as(
+        "SELECT id, username, password_hash, role FROM users          WHERE shop_id = ? AND username = ? AND active = 1",
+    )
+    .bind(state.shop.id)
+    .bind(form.username.trim())
+    .fetch_optional(&state.pool)
+    .await?;
 
-    let valid = stored.is_some_and(|hash| verify_password(&form.password, &hash));
-    if !valid {
+    let user = account.and_then(|(id, username, hash, role)| {
+        let role = Role::parse(&role)?;
+        verify_password(&form.password, &hash).then_some(SessionUser { id, username, role })
+    });
+    let Some(user) = user else {
         state.record_hit(&key);
         return Ok(Redirect::to("/login?error=1").into_response());
-    }
-    let sid = state.create_session();
+    };
+    let sid = state.create_session(user);
     let mut response = Redirect::to("/pos").into_response();
     response
         .headers_mut()

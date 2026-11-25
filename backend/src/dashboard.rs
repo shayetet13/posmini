@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
 use crate::{
-    auth::Authed,
+    auth::Admin,
     error::{ApiError, ApiResult},
     payment::format_baht,
     state::AppState,
@@ -526,7 +526,7 @@ async fn slips(
 }
 
 pub async fn data(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Query(params): Query<Params>,
 ) -> ApiResult<Json<Value>> {
@@ -534,11 +534,13 @@ pub async fn data(
     let now = chrono::Utc::now().naive_utc();
     let mut body = build(&state.pool, state.shop.id, &range, now).await?;
     body["slips"] = json!(slips(&state.pool, state.shop.id, &range, &state.bill()).await?);
+    let (from, to) = range.utc_bounds();
+    body["audit"] = crate::audit::for_period(&state.pool, state.shop.id, &from, &to).await?;
     Ok(Json(body))
 }
 
 pub async fn export(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Query(params): Query<Params>,
 ) -> ApiResult<Response> {

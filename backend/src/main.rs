@@ -1,5 +1,6 @@
 mod admin;
 mod api;
+mod audit;
 mod auth;
 mod bill;
 mod config;
@@ -21,6 +22,7 @@ mod promptpay;
 mod raster;
 mod settings;
 mod site;
+mod staff;
 mod state;
 mod thai;
 
@@ -94,6 +96,9 @@ fn router(state: AppState) -> Router {
         .route("/api/settings/test", post(admin::test_settings))
         .route("/api/settings/bot", get(admin::bot_status))
         .route("/api/settings/routes", get(admin::list_routes))
+        .route("/api/me", get(staff::me))
+        .route("/api/users", get(staff::list).post(staff::create))
+        .route("/api/users/{id}", put(staff::update).delete(staff::remove))
         .route("/api/settings/reset-sales", post(admin::reset_sales))
         .route(
             "/api/print/settings",

@@ -14,10 +14,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
+    audit::{self, action},
     auth::{Authed, client_key},
     error::{ApiError, ApiResult},
     events::{self, Event},
     orders::{self, ItemReq, OrderView},
+    payment::format_baht,
     promptpay,
     state::AppState,
 };
@@ -213,12 +215,28 @@ pub async fn active_orders(
     Ok(Json(orders::active_orders(&state).await?))
 }
 
+/// What the order is worth and how far along it is, for the audit line.
+async fn order_facts(state: &AppState, id: i64) -> ApiResult<(i64, String)> {
+    let row: Option<(i64, String)> =
+        sqlx::query_as("SELECT total_satang, status FROM orders WHERE id = ? AND shop_id = ?")
+            .bind(id)
+            .bind(state.shop.id)
+            .fetch_optional(&state.pool)
+            .await?;
+    row.ok_or(ApiError::NotFound)
+}
+
 pub async fn confirm_order(
-    _auth: Authed,
+    Authed(user): Authed,
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
     let changed = orders::mark_paid(&state, id, None).await?;
+    if changed {
+        let (total, _) = order_facts(&state, id).await?;
+        let detail = format!("กดยืนยันรับเงินเอง ฿{}", format_baht(total));
+        audit::record(&state, &user, action::CONFIRM_MANUAL, Some(id), &detail).await;
+    }
     Ok(Json(json!({ "changed": changed })))
 }
 
@@ -229,12 +247,16 @@ pub struct CallParams {
 }
 
 pub async fn call_order(
-    _auth: Authed,
+    Authed(user): Authed,
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Query(params): Query<CallParams>,
 ) -> ApiResult<Json<Value>> {
     orders::call_order(&state, id, params.force).await?;
+    if params.force {
+        let detail = "เรียกคิวข้ามลำดับ";
+        audit::record(&state, &user, action::CALL_SKIP, Some(id), detail).await;
+    }
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -254,11 +276,20 @@ pub async fn done_order(
 }
 
 pub async fn cancel_order(
-    _auth: Authed,
+    Authed(user): Authed,
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
+    let (total, status) = order_facts(&state, id).await?;
     orders::close_order(&state, id, false).await?;
+    let paid = matches!(status.as_str(), "paid" | "called");
+    let what = if paid {
+        action::CANCEL_PAID
+    } else {
+        action::CANCEL
+    };
+    let detail = format!("ยกเลิกออเดอร์ ฿{}", format_baht(total));
+    audit::record(&state, &user, what, Some(id), &detail).await;
     Ok(Json(json!({ "ok": true })))
 }
 

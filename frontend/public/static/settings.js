@@ -1,7 +1,7 @@
 (function () {
   const { $, h, baht, api, upload, productPic, toast } = PM;
   const IMAGE_SIDE = 640;
-  const TAB_KEYS = ['menu', 'pay', 'bill', 'print', 'reset'];
+  const TAB_KEYS = ['menu', 'pay', 'bill', 'print', 'staff', 'reset'];
   const tabFromHash = () => (TAB_KEYS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'menu');
   const state = { tab: tabFromHash(), products: [], settings: null, testMsg: null, selecting: false, selected: new Set(), print: null, bill: null, billKind: 'ticket', targets: null, targetsLoading: false, bot: null, botChecking: false };
 
@@ -14,13 +14,14 @@
     }
   }
 
-  const TABS = [['menu', 'เมนูสินค้า'], ['pay', 'การรับเงิน'], ['bill', 'บิลและเลขคิว'], ['print', 'เครื่องพิมพ์'], ['reset', 'เริ่มใหม่']];
+  const TABS = [['menu', 'เมนูสินค้า'], ['pay', 'การรับเงิน'], ['bill', 'บิลและเลขคิว'], ['print', 'เครื่องพิมพ์'], ['staff', 'พนักงาน'], ['reset', 'เริ่มใหม่']];
   const ID_TYPES = { phone: 'เบอร์โทรศัพท์', national_id: 'เลขบัตรประชาชน', ewallet: 'e-Wallet' };
 
   function setTab(tab) {
     state.tab = tab;
     history.replaceState(null, '', '#' + tab);
     if (tab === 'print') loadTargets(false);
+    if (tab === 'staff') loadUsers();
     watchBot(tab === 'pay' && !!state.settings);
     render();
   }
@@ -32,7 +33,7 @@
 
   function render() {
     renderTabs();
-    const views = { menu: renderMenu, pay: renderPay, bill: renderBill, print: renderPrint, reset: renderReset };
+    const views = { menu: renderMenu, pay: renderPay, bill: renderBill, print: renderPrint, staff: renderStaff, reset: renderReset };
     $('#view').replaceChildren(...views[state.tab]().filter(Boolean));
   }
 
@@ -848,6 +849,73 @@
     ];
   }
 
+  // ------------------------------------------------------------- staff tab
+
+  const ROLE_NAME = { admin: 'แอดมิน (ทำได้ทุกอย่าง)', cashier: 'แคชเชียร์ (ขาย รับเงิน เรียกคิว)' };
+
+  async function loadUsers() {
+    try { state.users = await api('GET', '/api/users'); } catch (err) { toast(err.message); state.users = state.users || []; }
+    if (state.tab === 'staff') render();
+  }
+
+  function openStaffEditor(u) {
+    const field = (label, input) => h('label', { class: 'field' }, h('span', null, label), input);
+    const role = h('select', null, ...Object.entries(ROLE_NAME).map(([v, label]) => h('option', { value: v, selected: u.role === v }, label)));
+    const active = h('input', { type: 'checkbox', class: 'pcheck', checked: u.active });
+    const password = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'เว้นว่าง = ไม่เปลี่ยน (อย่างน้อย 8 ตัว)' });
+    const close = () => $('#editmodal').classList.remove('open');
+    const save = h('button', { class: 'btn primary block', type: 'button' }, 'บันทึก');
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      try {
+        const body = { role: role.value, active: active.checked };
+        if (password.value) body.password = password.value;
+        await api('PUT', '/api/users/' + u.id, body);
+        close(); toast('บันทึกแล้ว'); await loadUsers();
+      } catch (err) { toast(err.message); save.disabled = false; }
+    });
+    const del = h('button', { class: 'btn danger block', type: 'button' }, 'ลบบัญชีนี้');
+    del.addEventListener('click', async () => {
+      if (!(await PM.confirm('ลบบัญชี “' + u.username + '” ถาวร?\nประวัติที่เขาทำไว้ในบันทึกการทำงานยังอยู่', { title: 'ลบพนักงาน', okText: 'ลบบัญชี' }))) return;
+      try { await api('DELETE', '/api/users/' + u.id); close(); toast('ลบแล้ว'); await loadUsers(); } catch (err) { toast(err.message); }
+    });
+    $('#editbox').replaceChildren(
+      h('h3', { style: 'margin-bottom:10px' }, 'แก้ไขบัญชี ' + u.username),
+      field('ตำแหน่ง', role),
+      h('label', { class: 'checkrow' }, active, h('span', null, 'เปิดใช้งานบัญชีนี้')),
+      field('รหัสผ่านใหม่', password),
+      h('div', { class: 'btns' }, save, del, h('button', { class: 'btn block', type: 'button', onclick: close }, 'ยกเลิก')));
+    $('#editmodal').classList.add('open');
+  }
+
+  function renderStaff() {
+    const field = (label, input) => h('label', { class: 'field' }, h('span', null, label), input);
+    const name = h('input', { autocomplete: 'off', maxlength: 30, placeholder: 'เช่น somchai (a-z 0-9 . _ -)' });
+    const password = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'อย่างน้อย 8 ตัว' });
+    const role = h('select', null, ...Object.entries(ROLE_NAME).reverse().map(([v, label]) => h('option', { value: v }, label)));
+    const add = h('button', { class: 'btn primary', type: 'button' }, '+ เพิ่มพนักงาน');
+    add.addEventListener('click', async () => {
+      add.disabled = true;
+      try {
+        await api('POST', '/api/users', { username: name.value, password: password.value, role: role.value });
+        name.value = ''; password.value = ''; toast('เพิ่มพนักงานแล้ว'); await loadUsers();
+      } catch (err) { toast(err.message); }
+      add.disabled = false;
+    });
+    const users = state.users || [];
+    return [
+      h('div', { class: 'card', style: 'margin-bottom:12px' },
+        h('h2', { style: 'font-size:18px;margin-bottom:4px' }, 'เพิ่มพนักงาน'),
+        h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'แคชเชียร์ขาย รับเงิน เรียกคิวได้ แต่เข้าหน้าจัดการ สรุปยอด และล้างยอดขายไม่ได้ ทุกการกดยืนยันเองหรือยกเลิกจะถูกบันทึกชื่อไว้'),
+        field('ชื่อผู้ใช้', name), field('รหัสผ่าน', password), field('ตำแหน่ง', role), add),
+      h('div', { class: 'card' },
+        h('h2', { style: 'font-size:18px;margin-bottom:8px' }, 'บัญชีทั้งหมด (' + users.length + ')'),
+        ...users.map((u) => h('div', { class: 'prow' },
+          h('div', { class: 'pinfo' }, h('div', { class: 'pname' }, u.username), h('div', { class: 'muted' }, (ROLE_NAME[u.role] || u.role) + (u.active ? '' : ' · ปิดใช้งาน'))),
+          h('button', { class: 'btn small', type: 'button', onclick: () => openStaffEditor(u) }, 'แก้ไข')))),
+    ];
+  }
+
   // -------------------------------------------------------------- reset tab
 
   // Deletes every order, payment and print job and starts the queue over; menu and settings stay.
@@ -876,11 +944,12 @@
     try { state.print = await api('GET', '/api/print/settings'); } catch (err) { toast(err.message); }
     try { state.bill = await api('GET', '/api/bill/settings'); } catch (err) { toast(err.message); }
     if (state.tab === 'print') loadTargets(false);
+    if (state.tab === 'staff') loadUsers();
     watchBot(state.tab === 'pay');
     render();
   }
 
-  window.addEventListener('hashchange', () => { state.tab = tabFromHash(); if (state.tab === 'print') loadTargets(false); watchBot(state.tab === 'pay'); render(); });
+  window.addEventListener('hashchange', () => { state.tab = tabFromHash(); if (state.tab === 'print') loadTargets(false); if (state.tab === 'staff') loadUsers(); watchBot(state.tab === 'pay'); render(); });
   $('#editmodal').addEventListener('click', (e) => { if (e.target.id === 'editmodal') e.target.classList.remove('open'); });
   init();
 })();

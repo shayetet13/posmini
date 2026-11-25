@@ -12,8 +12,8 @@ use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 
 use crate::{
-    bill::BillSettings, config::Config, db::Shop, events::Event, payment::PaymentClient,
-    printing::PrintSettings, settings::PaySettings,
+    auth::SessionUser, bill::BillSettings, config::Config, db::Shop, events::Event,
+    payment::PaymentClient, printing::PrintSettings, settings::PaySettings,
 };
 
 /// Payment settings plus the verify-API client built from them (if complete).
@@ -59,7 +59,7 @@ pub struct AppState {
     station_seen: Arc<Mutex<Option<Instant>>>,
     cart: Arc<Mutex<Option<Value>>>,
     displays: Arc<AtomicUsize>,
-    sessions: Arc<Mutex<HashMap<String, Instant>>>,
+    sessions: Arc<Mutex<HashMap<String, (Instant, SessionUser)>>>,
     limits: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
 }
 
@@ -181,19 +181,27 @@ impl AppState {
         let _ = self.hub.send(event);
     }
 
-    pub fn create_session(&self) -> String {
+    pub fn create_session(&self, user: SessionUser) -> String {
         let sid = random_token();
         let mut map = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        map.retain(|_, expires| *expires > now);
-        map.insert(sid.clone(), now + SESSION_TTL);
+        map.retain(|_, (expires, _)| *expires > now);
+        map.insert(sid.clone(), (now + SESSION_TTL, user));
         sid
     }
 
-    pub fn session_valid(&self, sid: &str) -> bool {
+    /// Who is logged in behind this session id, if the session is still valid.
+    pub fn session_user(&self, sid: &str) -> Option<SessionUser> {
         let map = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         map.get(sid)
-            .is_some_and(|expires| *expires > Instant::now())
+            .filter(|(expires, _)| *expires > Instant::now())
+            .map(|(_, user)| user.clone())
+    }
+
+    /// Logs an account out everywhere (switched off, deleted, new role or password).
+    pub fn drop_sessions_of(&self, user_id: i64) {
+        let mut map = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, (_, user)| user.id != user_id);
     }
 
     pub fn drop_session(&self, sid: &str) {

@@ -267,6 +267,32 @@
       list.length >= 500 ? h('p', { class: 'muted note' }, 'แสดง 500 รายการล่าสุดของช่วงนี้ เลือกช่วงที่สั้นลงเพื่อดูรายการเก่ากว่า') : null);
   }
 
+  // ---- audit: who confirmed, cancelled or changed what (the money-risky actions first)
+  const AUDIT_LABELS = {
+    confirm_manual: 'กดยืนยันรับเงินเอง', cancel_paid: 'ยกเลิกหลังชำระเงิน', cancel: 'ยกเลิกก่อนชำระเงิน',
+    call_skip: 'เรียกคิวข้ามลำดับ', reset_sales: 'ล้างยอดขาย', staff_added: 'เพิ่มพนักงาน',
+    staff_changed: 'แก้บัญชีพนักงาน', staff_removed: 'ลบพนักงาน',
+  };
+  const AUDIT_WARN = new Set(['confirm_manual', 'cancel_paid', 'reset_sales']);
+
+  function auditCard(d) {
+    const a = d.audit || { rows: [], counts: {} };
+    const chips = Object.entries(a.counts).sort((x, y) => y[1] - x[1])
+      .map(([k, n]) => h('span', { class: 'badge ' + (AUDIT_WARN.has(k) ? 'warn' : '') }, (AUDIT_LABELS[k] || k) + ' ' + n));
+    return h('section', { class: 'card' },
+      h('div', { class: 'cardhead' }, h('h2', null, 'บันทึกการทำงาน')),
+      h('p', { class: 'muted note' }, 'ใครกดยืนยันรับเงินเอง ยกเลิกออเดอร์ หรือล้างยอดขาย บันทึกชื่อและเวลาไว้ถาวร แก้หรือลบไม่ได้'),
+      chips.length ? h('div', { class: 'audit-chips' }, ...chips) : null,
+      a.rows.length ? h('ul', { class: 'slips' }, ...a.rows.map((r) => h('li', { class: 'slip' },
+        h('div', { class: 'slip-top' },
+          h('span', { class: 'slip-time num' }, slipTime(r.at)),
+          h('b', null, r.actor + (r.role === 'cashier' ? ' (แคชเชียร์)' : '')),
+          h('span', { class: 'badge ' + (AUDIT_WARN.has(r.action) ? 'warn' : '') }, AUDIT_LABELS[r.action] || r.action),
+          r.order_id ? h('span', { class: 'muted num' }, 'ออเดอร์ #' + r.order_id) : null),
+        r.detail ? h('div', { class: 'slip-meta muted' }, r.detail) : null)))
+        : h('p', { class: 'muted empty' }, 'ยังไม่มีรายการในช่วงนี้'));
+  }
+
   function render() {
     renderControls();
     const view = $('#view');
@@ -281,6 +307,7 @@
         breakdown('QR แยกตามธนาคาร', d.banks, BANKS, 'bank', 'ธนาคารที่ API ตรวจพบ ส่วนพนักงานกดยืนยันเองไม่มีข้อมูลธนาคาร'),
         cancelled(d))),
       slipsCard(d),
+      auditCard(d),
     ]);
   }
 

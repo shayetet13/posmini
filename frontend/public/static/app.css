@@ -693,3 +693,5 @@ a.btn,a.pill{text-decoration:none;color:inherit}
 .drag:hover,.drag:focus-visible{background:var(--brand-soft);color:var(--ink)}
 .sortitem.dragging{position:relative;z-index:2;opacity:.92;box-shadow:0 10px 24px -8px rgba(0,0,0,.45);border-radius:14px;background:var(--card);cursor:grabbing}
 .sortitem.dragging .drag{cursor:grabbing}
+
+.audit-chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}

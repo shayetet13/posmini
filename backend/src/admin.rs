@@ -11,7 +11,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    auth::Authed,
+    audit,
+    auth::{Admin, Authed, Role},
     error::{ApiError, ApiResult},
     events::Event,
     menu,
@@ -167,7 +168,7 @@ fn products_changed(state: &AppState) {
 }
 
 pub async fn create_product(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Json(req): Json<ProductReq>,
 ) -> ApiResult<Json<Value>> {
@@ -201,7 +202,7 @@ pub async fn create_product(
 }
 
 pub async fn update_product(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(req): Json<ProductReq>,
@@ -270,7 +271,7 @@ pub struct ReorderReq {
 /// The list must be exactly the rows that are there now, so a stale page cannot drop or
 /// duplicate anything.
 pub async fn reorder_products(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Json(req): Json<ReorderReq>,
 ) -> ApiResult<Json<Value>> {
@@ -307,7 +308,7 @@ pub async fn reorder_products(
 
 /// Soft delete: past orders keep their own copy of name and price.
 pub async fn delete_product(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
@@ -343,7 +344,7 @@ pub struct BulkDeleteReq {
 
 /// Deletes the selected products; unknown or already-deleted ids are ignored.
 pub async fn bulk_delete_products(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Json(req): Json<BulkDeleteReq>,
 ) -> ApiResult<Json<Value>> {
@@ -367,7 +368,7 @@ pub async fn bulk_delete_products(
 }
 
 pub async fn delete_all_products(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
 ) -> ApiResult<Json<Value>> {
     let done = sqlx::query(SOFT_DELETE_SQL)
@@ -391,7 +392,7 @@ fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
 }
 
 pub async fn set_image(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
     body: Bytes,
@@ -418,7 +419,7 @@ pub async fn set_image(
 }
 
 pub async fn clear_image(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
@@ -553,12 +554,18 @@ fn settings_view(runtime: &PayRuntime) -> Value {
     })
 }
 
-pub async fn get_settings(_auth: Authed, State(state): State<AppState>) -> Json<Value> {
-    Json(settings_view(&state.pay()))
+/// The admin sees every field; a cashier only learns whether automatic checking is on.
+pub async fn get_settings(Authed(user): Authed, State(state): State<AppState>) -> Json<Value> {
+    let view = settings_view(&state.pay());
+    if user.role == Role::Admin {
+        Json(view)
+    } else {
+        Json(json!({ "verify_active": view["verify_active"] }))
+    }
 }
 
 pub async fn put_settings(
-    _auth: Authed,
+    _admin: Admin,
     State(state): State<AppState>,
     Json(req): Json<SettingsReq>,
 ) -> ApiResult<Json<Value>> {
@@ -606,7 +613,7 @@ fn classify_ping(ping: &PingStatus) -> (bool, String) {
 }
 
 /// Probes the verify API (no payment is created) to check the address and the key.
-pub async fn test_settings(_auth: Authed, State(state): State<AppState>) -> ApiResult<Json<Value>> {
+pub async fn test_settings(_admin: Admin, State(state): State<AppState>) -> ApiResult<Json<Value>> {
     let client = state.pay().client.clone().ok_or(ApiError::BadRequest(
         "ยังกรอกข้อมูลระบบตรวจยอดไม่ครบ กรุณาบันทึกให้ครบก่อน",
     ))?;
@@ -679,7 +686,7 @@ fn bot_verdict(health: &BotHealth) -> (&'static str, bool, String) {
 }
 
 /// Whether the bot that reads bank notifications is running (asks the verify API, creates nothing).
-pub async fn bot_status(_auth: Authed, State(state): State<AppState>) -> Json<Value> {
+pub async fn bot_status(_admin: Admin, State(state): State<AppState>) -> Json<Value> {
     let Some(client) = state.pay().client.clone() else {
         return Json(json!({
             "state": "not_configured",
@@ -708,7 +715,7 @@ pub struct ResetSalesReq {
 /// Starts the shop over for sales: every order, payment and print job is deleted and the queue
 /// starts again at the first number. The menu and every setting stay as they are.
 pub async fn reset_sales(
-    _auth: Authed,
+    Admin(admin): Admin,
     State(state): State<AppState>,
     Json(req): Json<ResetSalesReq>,
 ) -> ApiResult<Json<Value>> {
@@ -738,6 +745,8 @@ pub async fn reset_sales(
         .rows_affected();
     tx.commit().await?;
     tracing::warn!(orders = removed, "sales reset from the settings page");
+    let detail = format!("ล้างออเดอร์ {removed} รายการ");
+    audit::record(&state, &admin, audit::action::RESET_SALES, None, &detail).await;
 
     // Every open screen reloads its lists; the print queue shows empty again.
     state.publish(Event::new("orders", json!({})));
@@ -747,7 +756,7 @@ pub async fn reset_sales(
 }
 
 /// The bots (and their chats) the verify API has, to choose from in settings.
-pub async fn list_routes(_auth: Authed, State(state): State<AppState>) -> Json<Value> {
+pub async fn list_routes(_admin: Admin, State(state): State<AppState>) -> Json<Value> {
     let Some(client) = state.pay().client.clone() else {
         return Json(json!({
             "ok": false,
