@@ -3,7 +3,7 @@
 // Pages, scripts and styles are fetched from the network first (so an update shows up at once)
 // and fall back to the last copy when offline. Product pictures are cached. Live data never is:
 // /api/ and /events/ always go straight to the server, so a stale queue or payment is impossible.
-// Selling needs the server, so offline the app shows a clear "no connection" page instead.
+// The till page itself is kept too, so cash sales can go on without a connection (see offlineq.js).
 const VERSION = 'posmini-v1';
 const SHELL = VERSION + '-shell';
 const RUNTIME = VERSION + '-runtime';

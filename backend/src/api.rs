@@ -106,7 +106,15 @@ pub async fn pos_create_order(
     if !matches!(req.method.as_str(), "cash" | "promptpay") {
         return Err(ApiError::BadRequest("วิธีชำระเงินไม่ถูกต้อง"));
     }
-    let id = orders::create_order(
+    // A sale sent twice (the answer was lost, the till retried) is still one order.
+    let sent_before = match &req.extras.client_id {
+        Some(cid) => orders::id_by_client_id(&state, cid).await,
+        None => None,
+    };
+    if let Some(existing) = sent_before {
+        return Ok(Json(orders::view_by_id(&state, existing).await?));
+    }
+    let created = orders::create_order(
         &state,
         "pos",
         &req.method,
@@ -114,7 +122,21 @@ pub async fn pos_create_order(
         &req.extras,
         req.cash_received_satang,
     )
-    .await?;
+    .await;
+    let id = match created {
+        Ok(id) => id,
+        Err(err) => {
+            // Two copies of the same sale racing: the loser finds the winner's order.
+            let raced = match &req.extras.client_id {
+                Some(cid) => orders::id_by_client_id(&state, cid).await,
+                None => None,
+            };
+            return match raced {
+                Some(existing) => Ok(Json(orders::view_by_id(&state, existing).await?)),
+                None => Err(err),
+            };
+        }
+    };
     if let Some(discount) = &req.extras.discount {
         let off = orders::view_by_id(&state, id).await?.discount_satang;
         let how = match discount.kind.as_str() {
@@ -132,6 +154,14 @@ pub async fn pos_create_order(
         orders::mark_paid(&state, id, None).await?;
     } else {
         orders::start_payment(&state, id).await?;
+    }
+    if let Some(at) = &req.extras.offline_at {
+        let view = orders::view_by_id(&state, id).await?;
+        let detail = format!(
+            "ขายตอนไม่มีสัญญาณ เมื่อ {at} ส่งเข้าระบบแล้ว ฿{}",
+            format_baht(view.total_satang)
+        );
+        audit::record(&state, &user, action::OFFLINE_SALE, Some(id), &detail).await;
     }
     state.publish(Event::new("orders", json!({})));
     let view = orders::active_orders(&state)
@@ -168,7 +198,7 @@ pub async fn self_order(
     orders::ensure_qr_free(&state, None).await?;
     let extras = orders::OrderExtras {
         note: req.note,
-        discount: None,
+        ..orders::OrderExtras::default()
     };
     let id = orders::create_order(&state, "self", "promptpay", &req.items, &extras, None).await?;
     if let Err(err) = orders::start_verified_payment(&state, id).await {

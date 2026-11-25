@@ -725,3 +725,10 @@ a.btn,a.pill{text-decoration:none;color:inherit}
 .linebox{margin-top:14px}
 .linebox[hidden]{display:none}
 .okline{margin:0;text-align:center;color:var(--ok,#2E7D4F);font-weight:600;padding:12px;border-radius:14px;background:rgba(46,125,79,.1)}
+
+/* ---- selling with no connection ------------------------------------------------------------- */
+.offlinebar{margin:0 22px 8px;display:grid;gap:6px}
+.offlinebar[hidden]{display:none}
+.ofrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;border-radius:14px;background:#FFF1D6;color:#6B4A00;font-size:16px;line-height:1.4;border:1px solid #E8C97A}
+.ofrow.bad{background:#FBE3E1;color:#7A1F1B;border-color:#E3A9A5}
+.ofrow .btn{flex:none}

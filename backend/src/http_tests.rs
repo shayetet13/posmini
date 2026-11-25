@@ -2267,3 +2267,144 @@ async fn linking_line_is_refused_for_a_closed_order_or_a_shop_that_never_set_it_
         .await;
     assert_eq!(wrong.status, StatusCode::BAD_REQUEST);
 }
+
+// ----------------------------------------------- selling with no connection, sent later
+
+#[tokio::test]
+async fn an_offline_sale_sent_twice_is_one_order() {
+    let (admin, cashier) = admin_and_cashier("offline").await;
+    let product = priced_product(&admin, 5_000).await;
+    let sale = |id: &str| {
+        cashier.post(
+            "/api/orders",
+            json!({
+                "method": "cash",
+                "cash_received_satang": 10_000,
+                "items": [{ "product_id": product, "qty": 1 }],
+                "client_id": id,
+                "offline_at": "2026-11-25T11:02:00+07:00",
+            }),
+        )
+    };
+
+    let first = sale("till-0001-abcdef").await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+    let first = first.json();
+    assert_eq!(first["status"], "paid");
+    assert_eq!(first["queue_label"], "A001");
+
+    // The answer was lost, so the till sends it again: same order back, nothing new made.
+    let again = sale("till-0001-abcdef").await.json();
+    assert_eq!(again["id"], first["id"]);
+    assert_eq!(again["queue_label"], "A001");
+    assert_eq!(
+        cashier
+            .get("/api/orders/active")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // A different sale is a different order.
+    assert_eq!(sale("till-0002-abcdef").await.json()["queue_label"], "A002");
+
+    // Even once the first was handed over, a late retry does not sell it again.
+    order_action(&cashier, first["id"].as_i64().unwrap(), "call").await;
+    order_action(&cashier, first["id"].as_i64().unwrap(), "done").await;
+    assert_eq!(sale("till-0001-abcdef").await.json()["id"], first["id"]);
+    assert_eq!(
+        cashier
+            .get("/api/orders/active")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // The record says it was an offline sale, once.
+    let audit = admin
+        .get(&format!(
+            "/api/dashboard?period=day&date={}",
+            today_bangkok()
+        ))
+        .await
+        .json()["audit"]
+        .clone();
+    assert_eq!(audit["counts"]["offline_sale"], 2);
+}
+
+#[tokio::test]
+async fn two_copies_of_one_offline_sale_arriving_together_make_one_order() {
+    let (admin, cashier) = admin_and_cashier("offline-race").await;
+    let product = priced_product(&admin, 5_000).await;
+    let body = json!({
+        "method": "cash",
+        "items": [{ "product_id": product, "qty": 1 }],
+        "client_id": "till-race-000001",
+    });
+    let (a, b) = tokio::join!(
+        cashier.post("/api/orders", body.clone()),
+        cashier.post("/api/orders", body.clone()),
+    );
+    assert_eq!(
+        (a.status, b.status),
+        (StatusCode::OK, StatusCode::OK),
+        "{} {}",
+        a.text(),
+        b.text()
+    );
+    assert_eq!(a.json()["id"], b.json()["id"]);
+    assert_eq!(
+        cashier
+            .get("/api/orders/active")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn an_offline_sale_with_a_bad_id_or_price_problem_is_refused_clearly() {
+    let (admin, cashier) = admin_and_cashier("offline-bad").await;
+    let product = priced_product(&admin, 5_000).await;
+    for bad in ["short", "has spaces in it!", &"x".repeat(65)] {
+        let refused = cashier
+            .post(
+                "/api/orders",
+                json!({ "method": "cash", "items": [{ "product_id": product, "qty": 1 }], "client_id": bad }),
+            )
+            .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    // Sold out in the meantime: the till is told, and nothing is left half made.
+    cashier
+        .put(
+            &format!("/api/products/{product}/sold-out"),
+            json!({ "sold_out": true }),
+        )
+        .await;
+    let sold_out = cashier
+        .post(
+            "/api/orders",
+            json!({ "method": "cash", "items": [{ "product_id": product, "qty": 1 }], "client_id": "till-gone-000001" }),
+        )
+        .await;
+    assert_eq!(sold_out.status, StatusCode::CONFLICT);
+    assert!(
+        cashier
+            .get("/api/orders/active")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}

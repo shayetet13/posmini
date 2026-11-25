@@ -57,6 +57,37 @@ pub struct OrderExtras {
     pub note: String,
     #[serde(default)]
     pub discount: Option<DiscountReq>,
+    /// Made by a till that sold with no connection; sending the same one again changes nothing.
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// When the till made that sale (its own clock), kept for the record only.
+    #[serde(default)]
+    pub offline_at: Option<String>,
+}
+
+const CLIENT_ID_MIN: usize = 8;
+const CLIENT_ID_MAX: usize = 64;
+const OFFLINE_AT_MAX_CHARS: usize = 40;
+
+fn clean_client_id(value: Option<&str>) -> ApiResult<Option<String>> {
+    let Some(id) = value else { return Ok(None) };
+    let ok = (CLIENT_ID_MIN..=CLIENT_ID_MAX).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    ok.then(|| Some(id.to_string()))
+        .ok_or(ApiError::BadRequest("รหัสรายการออฟไลน์ไม่ถูกต้อง"))
+}
+
+/// The order a till already sent under this id, if any.
+pub async fn id_by_client_id(state: &AppState, client_id: &str) -> Option<i64> {
+    sqlx::query_scalar("SELECT id FROM orders WHERE shop_id = ? AND client_id = ?")
+        .bind(state.shop.id)
+        .bind(client_id)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -285,6 +316,15 @@ pub async fn create_order(
     if items.is_empty() || items.len() > MAX_LINES {
         return Err(ApiError::BadRequest("จำนวนรายการไม่ถูกต้อง"));
     }
+    let client_id = clean_client_id(extras.client_id.as_deref())?;
+    let offline_at = match &extras.offline_at {
+        Some(at) => Some(clean_note(
+            at,
+            OFFLINE_AT_MAX_CHARS,
+            "เวลาขายออฟไลน์ไม่ถูกต้อง",
+        )?),
+        None => None,
+    };
     let order_note = clean_note(
         &extras.note,
         ORDER_NOTE_MAX_CHARS,
@@ -333,8 +373,8 @@ pub async fn create_order(
     let mut tx = state.pool.begin().await?;
     let order_id: i64 = sqlx::query_scalar(
         "INSERT INTO orders (shop_id, token, queue_date, status, method, source, total_satang, \
-         cash_received_satang, note, discount_satang, discount_reason) \
-         VALUES (?, ?, ?, 'pending_payment', ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+         cash_received_satang, note, discount_satang, discount_reason, client_id, offline_at) \
+         VALUES (?, ?, ?, 'pending_payment', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(state.shop.id)
     .bind(random_token())
@@ -346,6 +386,8 @@ pub async fn create_order(
     .bind(&order_note)
     .bind(discount)
     .bind(&discount_reason)
+    .bind(&client_id)
+    .bind(&offline_at)
     .fetch_one(&mut *tx)
     .await?;
     for (product_id, name, price, qty, note) in &lines {

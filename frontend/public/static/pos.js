@@ -2,6 +2,12 @@
   const { $, h, baht, api, productPic, qrCard, toast, listen, Voice, keepAwake } = PM;
   const ALL = 'ทั้งหมด';
   const { discountOff, totals: cartTotals } = window.CartMath;
+  // The browser may refuse storage (private mode); then the till simply cannot sell offline.
+  const store = (() => { try { localStorage.getItem('pm-probe'); return localStorage; } catch (_) { return { getItem: () => null, setItem: () => { throw new Error('no storage'); } }; } })();
+  const offline = OfflineQ.create(store);
+  const PRODUCTS_KEY = 'pm-products';
+  const SYNC_MS = 20000;
+  let syncing = false;
   const state = { discount: null, orderNote: '', notes: new Map(), printMode: 'off', printq: null, products: [], path: [], cat: ALL, cart: new Map(), orders: [], payId: null, printReady: false, verifyActive: false, expired: new Set() };
   let cartTimer;
 
@@ -179,13 +185,64 @@
     const body = { method, items, note: state.orderNote };
     if (state.discount) body.discount = state.discount;
     if (cashReceivedSatang != null) body.cash_received_satang = cashReceivedSatang;
+    const total = cartTotal();
     try {
       const order = await api('POST', '/api/orders', body);
       clearCart();
       setTab('menu');
       await loadOrders();
       if (method === 'promptpay') openPay(order.id);
-    } catch (err) { toast(err.message); }
+    } catch (err) {
+      if (!OfflineQ.isNoConnection(err)) { toast(err.message); return; }
+      // No connection: cash can still be taken and is sent later; a QR payment cannot.
+      if (method !== 'cash') { toast('ไม่มีสัญญาณอินเทอร์เน็ต รับได้เฉพาะเงินสด'); return; }
+      const names = cartLines().map((l) => l.p.name + ' ×' + l.qty).join(', ');
+      const kept = offline.add({ ...body, total_satang: total, names });
+      if (!kept) { toast('ไม่มีสัญญาณ และเก็บรายการไว้ในเครื่องไม่ได้ (พื้นที่เต็มหรือถูกบล็อก) ห้ามปิดหน้านี้ จดรายการไว้ก่อน'); return; }
+      clearCart();
+      setTab('menu');
+      toast('ไม่มีสัญญาณ เก็บขายเงินสด ' + baht(total) + ' ไว้ในเครื่องแล้ว (OFF-' + offline.list().length + ') จะส่งเข้าระบบเมื่อมีสัญญาณ');
+      paintOffline();
+    }
+  }
+
+  // ---- selling with no connection: what is waiting to be sent, and what the server refused
+  function paintOffline() {
+    const bar = $('#offlinebar');
+    const waiting = offline.waiting();
+    const failed = offline.failed();
+    if (!waiting.length && !failed.length) { bar.hidden = true; bar.replaceChildren(); return; }
+    bar.hidden = false;
+    const sendBtn = h('button', { class: 'btn small', type: 'button', disabled: syncing, onclick: () => syncOffline(true) }, syncing ? 'กำลังส่ง…' : 'ส่งตอนนี้');
+    bar.replaceChildren(...[
+      waiting.length ? h('div', { class: 'ofrow' },
+        h('span', null, h('b', null, 'ขายตอนไม่มีสัญญาณ ' + waiting.length + ' รายการ'), ' · ' + baht(waiting.reduce((s, x) => s + (x.total_satang || 0), 0)) + ' ยังไม่ได้ส่งเข้าระบบ (ยังไม่มีเลขคิว ไม่นับในยอดขาย) '),
+        sendBtn) : null,
+      ...failed.map((s) => h('div', { class: 'ofrow bad' },
+        h('span', null, h('b', null, 'ส่งไม่ผ่าน: '), (s.names || 'รายการขาย') + ' · ' + baht(s.total_satang || 0) + ' · ' + s.failed),
+        h('button', { class: 'btn small danger', type: 'button', onclick: async () => {
+          if (await PM.confirm('ลบรายการที่ส่งไม่ผ่านนี้?\nลูกค้าจ่ายเงินสดมาแล้ว ' + baht(s.total_satang || 0) + ' ควรบันทึกเองหรือขายใหม่', { title: 'ลบรายการออฟไลน์', okText: 'ลบรายการ' })) { offline.remove(s.client_id); paintOffline(); }
+        } }, 'ลบ'))),
+    ].filter(Boolean));
+  }
+
+  async function syncOffline(manual) {
+    if (syncing || !offline.waiting().length) { if (manual) toast('ไม่มีรายการรอส่ง'); return; }
+    syncing = true;
+    paintOffline();
+    try {
+      const res = await offline.flush((s) => api('POST', '/api/orders', {
+        method: s.method, items: s.items, note: s.note, discount: s.discount,
+        cash_received_satang: s.cash_received_satang, client_id: s.client_id, offline_at: s.at,
+      }));
+      if (res.sent) toast('ส่งยอดขายที่ค้างไว้เข้าระบบแล้ว ' + res.sent + ' รายการ');
+      if (res.failed) toast(res.failed + ' รายการส่งไม่ผ่าน ดูรายละเอียดที่แถบด้านบน');
+      if (res.stopped && manual) toast('ยังไม่มีสัญญาณ จะลองส่งใหม่เองทุก 20 วินาที');
+      if (res.sent) loadOrders();
+    } finally {
+      syncing = false;
+      paintOffline();
+    }
   }
 
   const CANCEL_ASK = { title: 'ยกเลิกออเดอร์', okText: 'ยกเลิกออเดอร์', cancelText: 'ไม่ยกเลิก' };
@@ -671,7 +728,17 @@
   }
 
   async function loadProducts() {
-    try { state.products = await api('GET', '/api/products'); } catch (err) { toast(err.message); return; }
+    try {
+      state.products = await api('GET', '/api/products');
+      try { store.setItem(PRODUCTS_KEY, JSON.stringify(state.products)); } catch (_) { /* no room: no offline copy */ }
+    } catch (err) {
+      // No connection: sell from the menu this till saw last time.
+      let saved = null;
+      try { saved = JSON.parse(store.getItem(PRODUCTS_KEY) || 'null'); } catch (_) { saved = null; }
+      if (!OfflineQ.isNoConnection(err) || !Array.isArray(saved) || !saved.length) { toast(err.message); return; }
+      state.products = saved;
+      toast('ไม่มีสัญญาณ ใช้เมนูที่จำไว้ในเครื่อง ขายเงินสดได้ตามปกติ');
+    }
     for (const id of [...state.cart.keys()]) {
       const p = productById(id);
       if (!p) state.cart.delete(id);
@@ -777,6 +844,10 @@
   }, () => { loadOrders(); loadProducts(); refreshDisplays(); loadPrintq(); });
 
   init();
+  paintOffline();
+  syncOffline(false);
+  window.addEventListener('online', () => { syncOffline(false); loadProducts(); });
+  setInterval(() => { if (offline.waiting().length) syncOffline(false); }, SYNC_MS);
   checkPay();
   setInterval(() => { if (document.visibilityState === 'visible') checkPay(); }, PAY_CHECK_MS);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkPay(); });

@@ -17,6 +17,7 @@ pub mod action {
     pub const RESET_SALES: &str = "reset_sales";
     pub const SOLD_OUT: &str = "sold_out";
     pub const DISCOUNT: &str = "discount";
+    pub const OFFLINE_SALE: &str = "offline_sale";
     pub const CLOSE_DAY: &str = "close_day";
     pub const BACKUP: &str = "backup";
     pub const STAFF_ADDED: &str = "staff_added";
