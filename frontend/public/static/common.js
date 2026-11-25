@@ -191,13 +191,14 @@
   }
 
   // One card. A group opens (`onOpen`); an item is added (`onAdd`). `showPrice` keeps the price on
-  // phones (the customer's own menu); the cashier's phone shows only the name.
+  // phones (the customer's own menu); the cashier's phone shows only the name. An item already in
+  // the cart also gets a trash button (`onRemove`) that takes the whole item out again.
   function menuTile(p, o) {
     const group = !!p.is_group;
     const out = !group && !!p.sold_out;
     const qty = o.qty || 0;
     const style = p.color ? '--card-bg:' + p.color + ';--card-fg:' + inkOn(p.color) : null;
-    return h('button', {
+    const tile = h('button', {
       class: 'tile' + (qty ? ' sel' : '') + (group ? ' grp' : '') + (out ? ' out' : '') + (o.showPrice ? ' showp' : ''), type: 'button', style,
       'aria-label': group ? 'เปิดกลุ่ม ' + p.name : p.name + ' ' + baht(p.price_satang) + (out ? ' หมดแล้ว' : ''),
       onclick: () => {
@@ -214,6 +215,9 @@
         h('div', { class: 'trow' },
           group ? h('span', { class: 'p grp-n' }, menuCount(o.products, p.id) + ' รายการ') : h('span', { class: 'p num' }, baht(p.price_satang)),
           h('span', { class: 'add', 'aria-hidden': 'true' }, icon(group ? 'chevronR' : 'plus')))));
+    if (group || !qty || !o.onRemove) return tile;
+    return h('div', { class: 'tilebox' }, tile,
+      h('button', { class: 'tile-del', type: 'button', 'aria-label': 'ลบ ' + p.name + ' ออกจากตะกร้า', title: 'ลบรายการนี้ออกจากตะกร้า', onclick: () => o.onRemove(p.id) }, icon('trash', 18)));
   }
 
   // The way back out of the groups: a button per level, the last one is where you are.
