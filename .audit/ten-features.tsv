@@ -1,0 +1,2 @@
+ts	phase	decision	why	evidence	result
+2026-11-25T10:55:00Z	frame	scoped ten features plus e2e into 7 batches ordered by dependency (roles and audit first, offline and e2e last)	audit needs a user identity, banner and sold-out are small, offline and LINE are the risky ones	this reply	open

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="POS">
+<meta name="theme-color" content="#F6F0E6">
+<meta name="format-detection" content="telephone=no">
+<title>คิวและใบเสร็จ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600&family=Prompt:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="noprint" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:10px;font-family:var(--font-display);font-weight:600;font-size:20px">
+      <div class="brandmark" style="margin:0;width:40px;height:40px;font-size:20px;border-radius:13px;background:linear-gradient(145deg,#E4693A,#BC4C1C);color:#fff;display:grid;place-items:center" aria-hidden="true" data-initial></div>
+      <span data-shop></span>
+    </div>
+    <button class="pill" id="snd" type="button"></button>
+  </div>
+  <div id="hero" aria-live="assertive"></div>
+  <section class="card receipt" id="receipt" style="margin-top:20px"></section>
+  <div class="noprint" style="display:grid;gap:8px;margin-top:26px">
+    <button class="btn block" id="print" type="button">พิมพ์ / บันทึกใบเสร็จ</button>
+  </div>
+</div>
+<script src="/shop.js"></script>
+<script>window.TOKEN = location.pathname.split("/")[2] || "";</script>
+<script src="/static/common.js"></script>
+<script src="/static/queue.js"></script>
+</body>
+</html>

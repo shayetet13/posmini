@@ -1,0 +1,27 @@
+# Run the cloud layout on your own machine: http://localhost:8080
+#   docker compose up --build
+# Secrets come from .env (copy .env.example); COOKIE_SECURE is off here because it is plain http.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite:///data/posmini.db?mode=rwc
+      BIND_ADDR: "[::]:8080"
+      COOKIE_SECURE: "false"
+    volumes:
+      - posmini-data:/data
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      BACKEND_URL: http://backend:8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend
+volumes:
+  posmini-data:

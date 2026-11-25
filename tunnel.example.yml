@@ -1,0 +1,11 @@
+# Fixed-hostname tunnel. Copy to tunnel.yml (start.bat then uses it instead of the quick tunnel).
+#   cloudflared tunnel create posmini
+#   cloudflared tunnel route dns posmini pos.example.com
+# then fill in the tunnel id, credentials path and hostname below.
+tunnel: <TUNNEL_ID>
+credentials-file: C:\Users\<you>\.cloudflared\<TUNNEL_ID>.json
+
+ingress:
+  - hostname: pos.example.com
+    service: http://127.0.0.1:8080
+  - service: http_status:404

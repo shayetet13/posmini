@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="POS">
+<meta name="theme-color" content="#F6F0E6">
+<meta name="format-detection" content="telephone=no">
+<title>เข้าสู่ระบบ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600&family=Prompt:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="login">
+  <section class="login-art" aria-hidden="true">
+    <div class="brandmark" data-initial></div>
+    <div>
+      <h1 data-shop></h1>
+      <p>ระบบขายหน้าร้านที่ใช้ง่าย รับ QR พร้อมเพย์ ออกคิว และพิมพ์ใบเสร็จในที่เดียว</p>
+    </div>
+    <div class="steam"></div>
+  </section>
+  <section class="login-form">
+    <form class="form" method="post" action="/login">
+      <div>
+        <h2>เข้าสู่ระบบแคชเชียร์</h2>
+        <p class="muted" style="margin-top:4px">กรอกชื่อผู้ใช้และรหัสผ่านเพื่อเริ่มขาย</p>
+      </div>
+      <div id="err" class="err" role="alert" hidden>ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง</div>
+      <label class="field"><span>ชื่อผู้ใช้</span><input name="username" autocomplete="username" autocapitalize="none" required></label>
+      <label class="field"><span>รหัสผ่าน</span><input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary block lg" type="submit" style="flex-direction:row;font-size:18px">เข้าสู่ระบบ</button>
+    </form>
+  </section>
+</main>
+<script src="/shop.js"></script>
+<script src="/static/common.js"></script>
+<script>
+if (location.search.includes('error=1')) document.getElementById('err').hidden = false;
+</script>
+</body>
+</html>

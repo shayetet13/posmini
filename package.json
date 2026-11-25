@@ -1,0 +1,14 @@
+{
+  "name": "posmini-tooling",
+  "private": true,
+  "type": "module",
+  "description": "Tooling only (Railway infrastructure as code, frontend tests). The app itself is Rust + static files.",
+  "scripts": {
+    "test": "node --test \"frontend/tests/*.test.js\"",
+    "railway:plan": "railway config plan",
+    "railway:apply": "railway config apply"
+  },
+  "devDependencies": {
+    "railway": "^3.17.0"
+  }
+}

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="POS">
+<meta name="theme-color" content="#F6F0E6">
+<meta name="format-detection" content="telephone=no">
+<title>สั่งอาหาร</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600&family=Prompt:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shopfront">
+  <header class="shophead">
+    <div class="brandmark" style="background:linear-gradient(145deg,#E4693A,#BC4C1C);color:#fff;width:48px;height:48px;border-radius:15px;display:grid;place-items:center;font-family:var(--font-display);font-weight:700;font-size:24px" aria-hidden="true" data-initial></div>
+    <div>
+      <h1 data-shop></h1>
+      <p class="muted">เลือกสินค้า แล้วชำระด้วย QR พร้อมเพย์</p>
+    </div>
+  </header>
+  <div class="sticky-chips"><div class="chips" id="chips"></div></div>
+  <div class="grid" id="grid"></div>
+</div>
+<div class="cartpill" id="cartpill" hidden>
+  <div><span class="lbl" id="count">0 รายการ</span><b class="num" id="sum">฿0</b></div>
+  <button class="btn primary" id="open" type="button">ดูตะกร้า / สั่งซื้อ</button>
+</div>
+<div class="modal" id="cartmodal" role="dialog" aria-modal="true" aria-label="ตะกร้า"><div class="sheet left" id="cartbox"></div></div>
+<script src="/shop.js"></script>
+<script>window.SLUG = location.pathname.split("/")[2] || window.SLUG;</script>
+<script src="/static/common.js"></script>
+<script src="/static/menu.js"></script>
+</body>
+</html>

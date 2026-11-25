@@ -1,0 +1,2 @@
+# Intentionally empty: stops cloudflared from loading the global ~/.cloudflared/config.yml
+# (whose catch-all "http_status:404" would override the quick tunnel's --url).

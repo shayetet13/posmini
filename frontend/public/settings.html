@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="POS">
+<meta name="theme-color" content="#F6F0E6">
+<meta name="format-detection" content="telephone=no">
+<title>ตั้งค่า</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600&family=Prompt:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="app">
+<div id="nav" data-active="settings"></div>
+<div class="main">
+  <header class="mhead">
+    <div class="mtitle">
+      <h1>จัดการร้าน</h1>
+      <p class="muted">เมนูสินค้า · การรับเงิน · บิลและเลขคิว · เครื่องพิมพ์</p>
+    </div>
+  </header>
+  <div class="content narrow">
+    <div class="chips" id="tabs" role="tablist"></div>
+    <div id="view"></div>
+  </div>
+</div>
+
+<div class="modal" id="editmodal" role="dialog" aria-modal="true" aria-label="แก้ไขสินค้า"><div class="sheet left" id="editbox"></div></div>
+
+<script src="/shop.js"></script>
+<script src="/static/common.js"></script>
+<script src="/static/calc.js"></script>
+<script src="/static/station.js"></script>
+<script src="/static/settings.js"></script>
+</body>
+</html>
