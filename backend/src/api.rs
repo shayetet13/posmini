@@ -70,7 +70,7 @@ fn check_slug(state: &AppState, slug: &str) -> ApiResult<()> {
     }
 }
 
-fn check_token(token: &str) -> ApiResult<()> {
+pub fn check_token(token: &str) -> ApiResult<()> {
     let ok = token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit());
     if ok { Ok(()) } else { Err(ApiError::NotFound) }
 }

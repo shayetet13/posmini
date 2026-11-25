@@ -13,6 +13,7 @@ mod escpos;
 mod events;
 #[cfg(test)]
 mod http_tests;
+mod line;
 mod menu;
 mod orders;
 mod pages;
@@ -98,6 +99,10 @@ fn router(state: AppState) -> Router {
         )
         .route("/api/settings/test", post(admin::test_settings))
         .route("/api/settings/bot", get(admin::bot_status))
+        .route(
+            "/api/settings/line",
+            get(line::get_settings).put(line::put_settings),
+        )
         .route("/api/settings/routes", get(admin::list_routes))
         .route("/api/me", get(staff::me))
         .route("/api/pay/health", get(admin::pay_health))
@@ -132,6 +137,7 @@ fn router(state: AppState) -> Router {
         .route("/api/m/{slug}/orders", post(api::self_order))
         .route("/api/q/{token}", get(api::order_by_token))
         .route("/api/q/{token}/refresh", post(api::refresh_qr))
+        .route("/api/q/{token}/line", get(line::offer).post(line::link))
         .route("/api/orders", post(api::pos_create_order))
         .route("/api/orders/active", get(api::active_orders))
         .route("/api/orders/{id}/confirm", post(api::confirm_order))

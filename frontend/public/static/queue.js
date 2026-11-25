@@ -80,23 +80,85 @@
     const o = order;
     if (o.qr_expires_in > 5) qrExpired = false;
     $('#hero').replaceChildren(hero(o));
-    $('#receipt').replaceChildren(
+    $('#receipt').replaceChildren(...[
       h('h3', { style: 'text-align:center' }, shopName(o)),
       ...((o.bill && o.bill.header) || []).map((line) => h('p', { class: 'muted', style: 'text-align:center;margin:0' }, line)),
       o.bill && o.bill.title ? h('p', { style: 'text-align:center;font-weight:600;margin:8px 0 0' }, o.bill.title) : null,
       h('p', { class: 'muted', style: 'text-align:center;margin:2px 0 8px' }, [o.queue_label ? (o.queue_label.startsWith('คิว') ? '' : 'คิว ') + o.queue_label : '', 'ออเดอร์ #' + o.id, !o.bill || o.bill.show_time ? when(o.created_at) : ''].filter(Boolean).join(' · ')),
-      ...o.items.map((i) => h('div', { class: 'line' }, h('span', null, i.name + ' ×' + i.qty), h('span', { class: 'num' }, baht(i.unit_price_satang * i.qty)))),
+      ...o.items.flatMap((i) => [h('div', { class: 'line' }, h('span', null, i.name + ' ×' + i.qty), h('span', { class: 'num' }, baht(i.unit_price_satang * i.qty))),
+        i.note ? h('div', { class: 'muted', style: 'margin:-2px 0 4px 10px;font-size:15px' }, '✎ ' + i.note) : null]),
+      o.note ? h('p', { class: 'muted', style: 'margin:6px 0 0' }, 'โน้ต: ' + o.note) : null,
+      o.discount_satang ? h('div', { class: 'line' }, h('span', null, 'ส่วนลด' + (o.discount_reason ? ' · ' + o.discount_reason : '')), h('span', { class: 'num' }, '−' + baht(o.discount_satang))) : null,
       h('div', { class: 'sum' }, h('span', null, 'รวมทั้งหมด'), h('span', { class: 'num' }, baht(o.total_satang))),
       o.cash_received_satang != null ? h('div', { class: 'line' }, h('span', null, 'รับเงินสด'), h('span', { class: 'num' }, baht(o.cash_received_satang))) : null,
       o.change_satang != null ? h('div', { class: 'line' }, h('b', null, 'เงินทอน'), h('b', { class: 'num' }, baht(o.change_satang))) : null,
       h('p', { class: 'muted', style: 'text-align:center;margin:10px 0 0' },
         o.status === 'pending_payment' ? 'ยังไม่ได้ชำระเงิน' : 'ชำระแล้ว'),
-      ...(o.status === 'pending_payment' ? [] : ((o.bill && o.bill.footer) || ['ขอบคุณครับ']).map((line) => h('p', { class: 'muted', style: 'text-align:center;margin:2px 0 0' }, line))));
+      ...(o.status === 'pending_payment' ? [] : ((o.bill && o.bill.footer) || ['ขอบคุณครับ']).map((line) => h('p', { class: 'muted', style: 'text-align:center;margin:2px 0 0' }, line)))].filter(Boolean));
+    paintLine();
     document.title = o.status === 'called' ? 'ถึงคิวแล้ว! · ' + shopName(o) : 'คิวและใบเสร็จ · ' + shopName(o);
     if (!printed && location.search.includes('print=1') && o.status !== 'pending_payment') {
       printed = true;
       setTimeout(() => window.print(), 300);
     }
+  }
+
+  // ---- LINE: the customer signs in with LINE (LIFF) so the shop can message them when called
+  const LIFF_SDK = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
+  const WANT_KEY = 'pm-line-want';
+  let line = null; // { enabled, liff_id, linked }, from the server
+  let lineBusy = false;
+
+  function loadLiff() {
+    if (window.liff) return Promise.resolve(window.liff);
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = LIFF_SDK;
+      s.onload = () => resolve(window.liff);
+      s.onerror = () => reject(new Error('เปิด LINE ไม่ได้ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'));
+      document.head.append(s);
+    });
+  }
+
+  async function linkLine() {
+    if (lineBusy) return;
+    lineBusy = true;
+    paintLine();
+    try {
+      const liff = await loadLiff();
+      await liff.init({ liffId: line.liff_id });
+      if (!liff.isLoggedIn()) {
+        try { sessionStorage.setItem(WANT_KEY, window.TOKEN); } catch (_) { /* private mode */ }
+        liff.login({ redirectUri: location.href });
+        return;
+      }
+      await api('POST', '/api/q/' + window.TOKEN + '/line', { id_token: liff.getIDToken() });
+      try { sessionStorage.removeItem(WANT_KEY); } catch (_) { /* private mode */ }
+      line.linked = true;
+      toast('เปิดแจ้งเตือนทาง LINE แล้ว');
+    } catch (err) { toast(err.message); }
+    lineBusy = false;
+    paintLine();
+  }
+
+  function paintLine() {
+    const box = $('#linebox');
+    const open = order && ['pending_payment', 'paid'].includes(order.status);
+    if (!line || !line.enabled || !open) { box.hidden = true; return; }
+    box.hidden = false;
+    box.replaceChildren(line.linked
+      ? h('p', { class: 'okline' }, '✓ จะแจ้งทาง LINE เมื่อถึงคิว')
+      : h('button', { class: 'btn block', type: 'button', disabled: lineBusy, onclick: linkLine }, lineBusy ? 'กำลังเชื่อม LINE…' : 'รับแจ้งเตือนทาง LINE เมื่อถึงคิว'),
+      line.linked ? null : h('p', { class: 'muted', style: 'margin:6px 0 0;font-size:14px;text-align:center' }, 'ต้องเพิ่มบัญชี LINE ของร้านเป็นเพื่อนด้วย จึงจะได้รับข้อความ'));
+  }
+
+  async function loadLine() {
+    try { line = await api('GET', '/api/q/' + window.TOKEN + '/line'); } catch (_) { return; }
+    paintLine();
+    let wanted = null;
+    try { wanted = sessionStorage.getItem(WANT_KEY); } catch (_) { /* private mode */ }
+    // Back from the LINE sign-in page: finish what the customer started.
+    if (line.enabled && !line.linked && wanted === window.TOKEN) linkLine();
   }
 
   async function load() {
@@ -124,5 +186,5 @@
     called: (d) => { alertCalled(d); load(); },
   }, load);
 
-  load();
+  load().then(loadLine);
 })();

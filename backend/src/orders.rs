@@ -813,6 +813,8 @@ pub async fn call_order(state: &AppState, order_id: i64, force: bool) -> ApiResu
     }
     let order = view_by_id(state, order_id).await?;
     let queue_no = order.queue_no.unwrap_or_default();
+    let line_state = state.clone();
+    tokio::spawn(async move { crate::line::notify_called(&line_state, order_id).await });
     state.publish(Event::for_order(
         "called",
         &order.token,

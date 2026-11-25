@@ -3,7 +3,7 @@
   const IMAGE_SIDE = 640;
   const TAB_KEYS = ['menu', 'pay', 'bill', 'print', 'staff', 'reset'];
   const tabFromHash = () => (TAB_KEYS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'menu');
-  const state = { tab: tabFromHash(), products: [], settings: null, testMsg: null, selecting: false, selected: new Set(), print: null, bill: null, billKind: 'ticket', targets: null, targetsLoading: false, bot: null, botChecking: false };
+  const state = { tab: tabFromHash(), line: null, products: [], settings: null, testMsg: null, selecting: false, selected: new Set(), print: null, bill: null, billKind: 'ticket', targets: null, targetsLoading: false, bot: null, botChecking: false };
 
   // A test sheet is printed by the server, or (cloud server, web mode) by this browser.
   async function runTest(kind) {
@@ -551,7 +551,36 @@
         h('div', { class: 'erow', style: 'margin-top:6px' }, saveBtn, testBtn),
         testBox,
         h('p', { class: 'muted', style: 'margin:8px 0 0;font-size:14px' }, 'ปุ่มทดสอบใช้ค่าที่บันทึกแล้ว: ค้นหารายการสมมติ 1 รายการ ทั้งแบบมีและไม่มี key เพื่อดูว่าเซิร์ฟเวอร์ตรวจ key จริง จึงไม่สร้างรายการเก็บเงินจริง และผลที่ตอบ 404 ของรายการสมมติถือว่าปกติ')),
-    ];
+      lineCard(),
+    ].filter(Boolean);
+  }
+
+  // LINE: a message to the customer when their queue is called.
+  function lineCard() {
+    const s = state.line;
+    if (!s) return null;
+    const input = (value, attrs) => h('input', { value: value || '', autocomplete: 'off', spellcheck: 'false', ...attrs });
+    const liff = input(s.liff_id, { placeholder: '1234567890-AbCdEfGh' });
+    const channel = input(s.login_channel_id, { inputmode: 'numeric', placeholder: 'Channel ID ของ LINE Login' });
+    const token = input('', { type: 'password', name: 'line-channel-token', placeholder: s.token_set ? 'ตั้งไว้แล้ว (เว้นว่างเพื่อใช้ค่าเดิม)' : 'Channel access token (long-lived)' });
+    const field = (label, el, note) => h('label', { class: 'field' }, h('span', null, label), el, note || null);
+    const save = h('button', { class: 'btn primary', type: 'button' }, 'บันทึก');
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      try {
+        state.line = await api('PUT', '/api/settings/line', { liff_id: liff.value, login_channel_id: channel.value, channel_token: token.value });
+        toast(state.line.ready ? 'บันทึกแล้ว หน้าคิวของลูกค้าจะมีปุ่มรับแจ้งเตือนทาง LINE' : 'บันทึกแล้ว แต่ยังกรอกไม่ครบ');
+        render();
+      } catch (err) { toast(err.message); save.disabled = false; }
+    });
+    return h('div', { class: 'card', style: 'margin-top:12px' },
+      h('div', { class: 'total', style: 'margin-bottom:6px' }, h('h2', { style: 'font-size:18px' }, 'แจ้งเตือนคิวทาง LINE'),
+        s.ready ? h('span', { class: 'badge ok' }, 'เปิดใช้งาน') : h('span', { class: 'badge warn' }, 'ยังไม่เปิด')),
+      h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'ลูกค้ากดปุ่มบนหน้าคิว เข้าสู่ระบบ LINE แล้วร้านจะส่งข้อความหาเมื่อถึงคิว ต้องมีบัญชี LINE Official Account (Messaging API) และช่อง LINE Login ที่สร้าง LIFF แอปไว้ และตั้งให้ LIFF ชวนเพิ่มเพื่อนกับบัญชีร้านด้วย'),
+      field('LIFF ID', liff),
+      field('Channel ID ของ LINE Login', channel, h('span', { class: 'muted' }, 'ใช้ตรวจว่าลูกค้าเข้าสู่ระบบ LINE จริง')),
+      field('Channel access token ของ Messaging API', token, h('span', { class: 'muted' }, 'เก็บในฐานข้อมูลของเครื่องนี้ ไม่ส่งกลับมาแสดง')),
+      h('div', { class: 'erow', style: 'margin-top:6px' }, save));
   }
 
   // --------------------------------------------------------------- bill tab
@@ -1006,6 +1035,7 @@
     try { state.settings = await api('GET', '/api/settings'); } catch (err) { toast(err.message); }
     try { state.print = await api('GET', '/api/print/settings'); } catch (err) { toast(err.message); }
     try { state.bill = await api('GET', '/api/bill/settings'); } catch (err) { toast(err.message); }
+    try { state.line = await api('GET', '/api/settings/line'); } catch (err) { toast(err.message); }
     if (state.tab === 'print') loadTargets(false);
     if (state.tab === 'staff') loadUsers();
     if (state.tab === 'reset') loadBackups();

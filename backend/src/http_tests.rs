@@ -2056,3 +2056,214 @@ async fn cancelling_a_paid_order_needs_a_reason_and_the_reason_is_recorded() {
     assert_eq!(reasons[0]["reason"], "ลูกค้าเปลี่ยนใจ");
     assert_eq!(reasons[0]["orders"], 1);
 }
+
+// ----------------------------------------------- LINE: queue called notification
+
+/// A pretend LINE: knows one good ID token and records every push it is asked to send.
+struct MockLine {
+    base: String,
+    pushes: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+}
+
+async fn mock_line() -> MockLine {
+    use std::sync::{Arc, Mutex};
+    type Pushes = Arc<Mutex<Vec<(String, Value)>>>;
+    async fn verify(body: String) -> (StatusCode, axum::Json<Value>) {
+        if body.contains("id_token=good-token") && body.contains("client_id=1234567890") {
+            (
+                StatusCode::OK,
+                axum::Json(json!({ "sub": "U-customer-1", "aud": "1234567890" })),
+            )
+        } else {
+            (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({ "error": "invalid_request" })),
+            )
+        }
+    }
+    async fn push(
+        axum::extract::State(pushes): axum::extract::State<Pushes>,
+        headers: axum::http::HeaderMap,
+        axum::Json(body): axum::Json<Value>,
+    ) -> StatusCode {
+        let auth = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        pushes.lock().unwrap().push((auth, body));
+        StatusCode::OK
+    }
+    let pushes: Pushes = Arc::default();
+    let app = Router::new()
+        .route("/oauth2/v2.1/verify", axum::routing::post(verify))
+        .route("/v2/bot/message/push", axum::routing::post(push))
+        .with_state(pushes.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    MockLine { base, pushes }
+}
+
+async fn wait_for_pushes(line: &MockLine, count: usize) -> bool {
+    for _ in 0..40 {
+        if line.pushes.lock().unwrap().len() >= count {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn a_customer_who_linked_line_is_told_when_their_queue_is_called() {
+    let line = mock_line().await;
+    let (admin, cashier) = admin_and_cashier("line").await;
+    let product = cashier.first_product().await;
+    let customer = admin.another_session();
+
+    // Only the admin sets it up, and the token never comes back out.
+    let setup = json!({ "liff_id": "1234-abcd", "login_channel_id": "1234567890", "channel_token": "chan-token" });
+    assert_eq!(
+        cashier
+            .put("/api/settings/line", setup.clone())
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let order = cashier.cash_order(product, None).await.json();
+    let token = order["token"].as_str().unwrap().to_string();
+    let id = order["id"].as_i64().unwrap();
+    let offer_path = format!("/api/q/{token}/line");
+    assert_eq!(
+        customer.get(&offer_path).await.json()["enabled"],
+        false,
+        "nothing is offered until it is set up"
+    );
+
+    let saved = admin.put("/api/settings/line", setup).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    assert!(!saved.text().contains("chan-token"));
+    assert_eq!(saved.json()["token_set"], true);
+    let kept = admin
+        .put(
+            "/api/settings/line",
+            json!({ "liff_id": "1234-abcd", "login_channel_id": "1234567890" }),
+        )
+        .await;
+    assert_eq!(
+        kept.json()["ready"],
+        true,
+        "a blank token keeps the stored one"
+    );
+    crate::settings::save_pairs(
+        &admin.state.pool,
+        admin.state.shop.id,
+        &[("line_api_base", line.base.clone())],
+    )
+    .await
+    .unwrap();
+
+    let offered = customer.get(&offer_path).await.json();
+    assert_eq!(
+        (offered["enabled"].as_bool(), offered["linked"].as_bool()),
+        (Some(true), Some(false))
+    );
+    assert_eq!(offered["liff_id"], "1234-abcd");
+
+    // A token LINE does not accept links nothing.
+    let bad = customer
+        .post(&offer_path, json!({ "id_token": "forged" }))
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    assert_eq!(customer.get(&offer_path).await.json()["linked"], false);
+    let good = customer
+        .post(&offer_path, json!({ "id_token": "good-token" }))
+        .await;
+    assert_eq!(good.status, StatusCode::OK, "{}", good.text());
+    assert_eq!(customer.get(&offer_path).await.json()["linked"], true);
+
+    assert_eq!(
+        order_action(&cashier, id, "call").await.status,
+        StatusCode::OK
+    );
+    assert!(wait_for_pushes(&line, 1).await, "the message was sent");
+    {
+        let pushes = line.pushes.lock().unwrap();
+        let (auth, body) = &pushes[0];
+        assert_eq!(auth, "Bearer chan-token");
+        assert_eq!(body["to"], "U-customer-1");
+        let text = body["messages"][0]["text"].as_str().unwrap();
+        assert!(text.contains("A001") && text.contains("ร้านทดสอบ"), "{text}");
+    }
+
+    // Someone who never linked LINE gets nothing, and a refused push never blocks the call.
+    let other = cashier.cash_order(product, None).await.json()["id"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(
+        order_action(&cashier, other, "call").await.status,
+        StatusCode::OK
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(line.pushes.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn linking_line_is_refused_for_a_closed_order_or_a_shop_that_never_set_it_up() {
+    let line = mock_line().await;
+    let (admin, cashier) = admin_and_cashier("line-closed").await;
+    let product = cashier.first_product().await;
+    let customer = admin.another_session();
+    let order = cashier.cash_order(product, None).await.json();
+    let token = order["token"].as_str().unwrap().to_string();
+    let id = order["id"].as_i64().unwrap();
+    let path = format!("/api/q/{token}/line");
+
+    let unset = customer
+        .post(&path, json!({ "id_token": "good-token" }))
+        .await;
+    assert_eq!(
+        unset.status,
+        StatusCode::BAD_REQUEST,
+        "no setup, no linking"
+    );
+
+    admin
+        .put(
+            "/api/settings/line",
+            json!({ "liff_id": "1234-abcd", "login_channel_id": "1234567890", "channel_token": "chan-token" }),
+        )
+        .await;
+    crate::settings::save_pairs(
+        &admin.state.pool,
+        admin.state.shop.id,
+        &[("line_api_base", line.base.clone())],
+    )
+    .await
+    .unwrap();
+    order_action(&cashier, id, "call").await;
+    order_action(&cashier, id, "done").await;
+    let closed = customer
+        .post(&path, json!({ "id_token": "good-token" }))
+        .await;
+    assert_eq!(closed.status, StatusCode::BAD_REQUEST, "{}", closed.text());
+    assert_eq!(
+        customer
+            .get("/api/q/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz/line")
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Settings with strange characters are not accepted.
+    let wrong = admin
+        .put(
+            "/api/settings/line",
+            json!({ "liff_id": "a b", "login_channel_id": "1" }),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST);
+}
