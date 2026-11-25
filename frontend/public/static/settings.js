@@ -14,7 +14,7 @@
     }
   }
 
-  const TABS = [['menu', 'เมนูสินค้า'], ['pay', 'การรับเงิน'], ['bill', 'บิลและเลขคิว'], ['print', 'เครื่องพิมพ์'], ['staff', 'พนักงาน'], ['reset', 'เริ่มใหม่']];
+  const TABS = [['menu', 'เมนูสินค้า'], ['pay', 'การรับเงิน'], ['bill', 'บิลและเลขคิว'], ['print', 'เครื่องพิมพ์'], ['staff', 'พนักงาน'], ['reset', 'ข้อมูล']];
   const ID_TYPES = { phone: 'เบอร์โทรศัพท์', national_id: 'เลขบัตรประชาชน', ewallet: 'e-Wallet' };
 
   function setTab(tab) {
@@ -22,6 +22,7 @@
     history.replaceState(null, '', '#' + tab);
     if (tab === 'print') loadTargets(false);
     if (tab === 'staff') loadUsers();
+    if (tab === 'reset') loadBackups();
     watchBot(tab === 'pay' && !!state.settings);
     render();
   }
@@ -919,22 +920,84 @@
   // -------------------------------------------------------------- reset tab
 
   // Deletes every order, payment and print job and starts the queue over; menu and settings stay.
+  // A small box that asks for the admin's password; resolves to the text, or null when cancelled.
+  function askPassword(title, message) {
+    return new Promise((resolve) => {
+      const input = h('input', { type: 'password', autocomplete: 'current-password', placeholder: 'รหัสผ่านแอดมิน' });
+      const done = (value) => { $('#editmodal').classList.remove('open'); resolve(value); };
+      const ok = h('button', { class: 'btn danger-fill block', type: 'button' }, 'ยืนยัน');
+      ok.addEventListener('click', () => done(input.value || null));
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok.click(); });
+      $('#editbox').replaceChildren(
+        h('h3', { style: 'margin-bottom:8px' }, title),
+        h('p', { class: 'muted', style: 'white-space:pre-line;margin:0 0 10px' }, message),
+        h('label', { class: 'field' }, h('span', null, 'รหัสผ่านแอดมินของคุณ'), input),
+        h('div', { class: 'btns' }, ok, h('button', { class: 'btn block', type: 'button', onclick: () => done(null) }, 'ยกเลิก')));
+      $('#editmodal').classList.add('open');
+      input.focus();
+    });
+  }
+
   async function resetSales() {
-    const ask = 'ลบออเดอร์ การรับเงิน และคิวพิมพ์ทั้งหมด แล้วเริ่มนับคิวใหม่จากคิวแรก\nเมนูสินค้าและการตั้งค่าทั้งหมดยังอยู่ครบ\nย้อนกลับไม่ได้ และยอดขายในหน้าสรุปจะหายไปด้วย';
-    if (!(await PM.confirm(ask, { title: 'ล้างยอดขายและคิวทั้งหมด', okText: 'ล้างทั้งหมด' }))) return;
+    const ask = 'ลบออเดอร์ การรับเงิน และคิวพิมพ์ทั้งหมด แล้วเริ่มนับคิวใหม่จากคิวแรก\nเมนูสินค้าและการตั้งค่าทั้งหมดยังอยู่ครบ\nย้อนกลับไม่ได้ ถ้าแค่จะจบวัน ใช้ “ปิดยอดวัน” ในหน้าสรุปยอดแทน เพราะเก็บรายงานไว้ให้';
+    if (!(await PM.confirm(ask, { title: 'ล้างยอดขายและคิวทั้งหมด', okText: 'ไปขั้นต่อไป' }))) return;
+    const password = await askPassword('ใส่รหัสผ่านเพื่อล้างยอดขาย', 'ปุ่มนี้ลบข้อมูลถาวร จึงต้องยืนยันด้วยรหัสผ่านของคุณอีกครั้ง');
+    if (!password) return;
     try {
-      const done = await api('POST', '/api/settings/reset-sales', { confirm: 'reset-sales' });
+      const done = await api('POST', '/api/settings/reset-sales', { confirm: 'reset-sales', password });
       toast('ล้างแล้ว ' + done.orders + ' ออเดอร์ เริ่มคิวใหม่เรียบร้อย');
     } catch (err) { toast(err.message); }
   }
 
+  // ---- backup: a copy of the whole database, downloaded now or kept by the server each night
+  async function loadBackups() {
+    try { state.backups = await api('GET', '/api/backup/files'); } catch (err) { state.backups = { files: [], keep: 0 }; toast(err.message); }
+    if (state.tab === 'reset') render();
+  }
+
+  async function backupNow(btn) {
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/backup', { method: 'POST', credentials: 'same-origin' });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'สำรองข้อมูลไม่สำเร็จ');
+      const name = (/filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '') || [])[1] || 'posmini-backup.db';
+      const url = URL.createObjectURL(await res.blob());
+      const link = h('a', { href: url, download: name });
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      toast('ดาวน์โหลดไฟล์สำรองแล้ว');
+      loadBackups();
+    } catch (err) { toast(err.message); }
+    btn.disabled = false;
+  }
+
+  const kb = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');
+
   function renderReset() {
-    return [h('div', { class: 'card' },
-      h('h2', { style: 'font-size:18px;margin-bottom:4px' }, 'ล้างยอดขายและคิว'),
-      h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'ใช้เมื่อจะเริ่มวันใหม่หรือหลังทดลองระบบ ทุกเครื่องที่เปิดอยู่จะโหลดรายการใหม่ให้เอง'),
-      h('p', { style: 'margin:0 0 4px' }, h('b', null, 'จะถูกลบ: '), 'ออเดอร์ทั้งหมด ประวัติรับเงิน คิวพิมพ์ และเลขคิว (เริ่มใหม่จากคิวแรก)'),
-      h('p', { style: 'margin:0 0 14px' }, h('b', null, 'ยังอยู่: '), 'เมนูสินค้าและรูป การตั้งค่ารับเงิน เครื่องพิมพ์ ข้อความบนบิล และบัญชีผู้ดูแล'),
-      h('button', { class: 'btn danger-fill', type: 'button', onclick: resetSales }, 'ล้างยอดขายและคิวทั้งหมด'))];
+    const b = state.backups;
+    const backupBtn = h('button', { class: 'btn primary', type: 'button' }, 'สำรองและดาวน์โหลดตอนนี้');
+    backupBtn.addEventListener('click', () => backupNow(backupBtn));
+    return [
+      h('div', { class: 'card', style: 'margin-bottom:12px' },
+        h('h2', { style: 'font-size:18px;margin-bottom:4px' }, 'สำรองข้อมูล'),
+        h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'ไฟล์สำรองมีทุกอย่าง (เมนู ออเดอร์ สลิป บัญชี การตั้งค่า) เซิร์ฟเวอร์สำรองเองวันละครั้งและเก็บล่าสุด ' + (b ? b.keep : 14) + ' ไฟล์ แต่ไฟล์ที่เก็บในเครื่องเดียวกับฐานข้อมูลกันได้แค่พลาดเอง ถ้าเครื่องเสียจะหายด้วยกัน ควรดาวน์โหลดเก็บไว้ที่อื่นเป็นระยะ'),
+        h('div', { class: 'erow' }, backupBtn),
+        b && b.files.length ? h('div', { style: 'margin-top:10px' }, ...b.files.map((f) => h('div', { class: 'prow' },
+          h('div', { class: 'pinfo' }, h('div', { class: 'pname num' }, f.at), h('div', { class: 'muted' }, f.name + ' · ' + kb(f.size))),
+          h('a', { class: 'btn small', href: '/api/backup/files/' + encodeURIComponent(f.name), download: f.name }, 'ดาวน์โหลด')))) : h('p', { class: 'muted', style: 'margin:10px 0 0' }, b ? 'ยังไม่มีไฟล์สำรองในเซิร์ฟเวอร์' : 'กำลังโหลด…')),
+      h('div', { class: 'card', style: 'margin-bottom:12px' },
+        h('h2', { style: 'font-size:18px;margin-bottom:4px' }, 'ปิดยอดวัน'),
+        h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'จบวันให้ปิดยอดแทนการลบ: ระบบสรุปยอดเงินสด ยอดโอน รายการที่กดยืนยันเอง ให้นับเงินสดในลิ้นชักเทียบ และเก็บรายงานไว้ดูย้อนหลัง'),
+        h('a', { class: 'btn', href: '/dashboard' }, 'ไปหน้าสรุปยอดเพื่อปิดยอด')),
+      h('div', { class: 'card' },
+        h('h2', { style: 'font-size:18px;margin-bottom:4px' }, 'ล้างยอดขายและคิว'),
+        h('p', { class: 'muted', style: 'margin:0 0 10px' }, 'ใช้เมื่อหลังทดลองระบบหรือเริ่มใหม่หมด ต้องใส่รหัสผ่านแอดมินยืนยัน ทุกเครื่องที่เปิดอยู่จะโหลดรายการใหม่ให้เอง'),
+        h('p', { style: 'margin:0 0 4px' }, h('b', null, 'จะถูกลบ: '), 'ออเดอร์ทั้งหมด ประวัติรับเงิน คิวพิมพ์ และเลขคิว (เริ่มใหม่จากคิวแรก)'),
+        h('p', { style: 'margin:0 0 14px' }, h('b', null, 'ยังอยู่: '), 'เมนูสินค้าและรูป การตั้งค่า บัญชีพนักงาน สลิปการโอน บันทึกการทำงาน และรายงานปิดยอด'),
+        h('button', { class: 'btn danger-fill', type: 'button', onclick: resetSales }, 'ล้างยอดขายและคิวทั้งหมด')),
+    ];
   }
 
   async function init() {
@@ -945,6 +1008,7 @@
     try { state.bill = await api('GET', '/api/bill/settings'); } catch (err) { toast(err.message); }
     if (state.tab === 'print') loadTargets(false);
     if (state.tab === 'staff') loadUsers();
+    if (state.tab === 'reset') loadBackups();
     watchBot(state.tab === 'pay');
     render();
   }

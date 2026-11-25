@@ -10,7 +10,7 @@
   const REFRESH_DEBOUNCE_MS = 800;
 
   const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
-  const state = { period: 'day', date: today(), data: null, error: null, seq: 0 };
+  const state = { period: 'day', date: today(), data: null, error: null, seq: 0, closes: [] };
   let refreshTimer;
 
   // ---- dates: `state.date` is always a full YYYY-MM-DD; the API gets the part the period needs
@@ -69,6 +69,7 @@
       if (seq !== state.seq) return;
       state.data = data;
       state.error = null;
+      state.closes = await api('GET', '/api/day/closes').catch(() => state.closes);
     } catch (err) {
       if (seq !== state.seq) return;
       state.error = err.message;
@@ -105,7 +106,8 @@
       h('div', { class: 'dlabel' }, h('b', null, label(state.period, state.date)), picker),
       h('button', { class: 'btn small', type: 'button', 'aria-label': 'ถัดไป', disabled: !canGoForward(), onclick: () => go({ date: shift(state.period, state.date, 1) }) }, '›'),
       h('button', { class: 'btn small', type: 'button', disabled: isCurrent(), onclick: () => go({ date: today() }) }, 'ปัจจุบัน'),
-      h('a', { class: 'btn small', href: '/api/dashboard/export?period=' + state.period + '&date=' + keyOf(state.period, state.date), download: '' }, 'ดาวน์โหลด CSV'));
+      h('a', { class: 'btn small', href: '/api/dashboard/export?period=' + state.period + '&date=' + keyOf(state.period, state.date), download: '' }, 'ดาวน์โหลด CSV'),
+      state.period === 'day' ? h('button', { class: 'btn small primary', type: 'button', onclick: openClose }, 'ปิดยอดวัน') : null);
 
     $('#controls').replaceChildren(chips, nav);
   }
@@ -293,6 +295,94 @@
         : h('p', { class: 'muted empty' }, 'ยังไม่มีรายการในช่วงนี้'));
   }
 
+  // ---- close the day: the takings frozen into a report, with the cash counted in the drawer
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const satangOf = (text) => {
+    const v = Number.parseFloat(String(text).replace(/,/g, '').trim());
+    return Number.isFinite(v) && v >= 0 ? Math.round(v * 100) : null;
+  };
+
+  function reportLines(rep, counted, note) {
+    const lines = [
+      ['ออเดอร์ที่ขายได้', rep.orders.toLocaleString('th-TH')],
+      ['ยอดขายรวม', baht(rep.revenue_satang)],
+      ['เงินสด (ต้องมีในลิ้นชัก)', baht(rep.cash_satang)],
+      ['โอน QR พร้อมเพย์', baht(rep.qr_satang)],
+      ['ตรวจยอดโดยบอท', rep.verified_payments + ' รายการ ' + baht(rep.verified_satang)],
+      ['กดยืนยันรับเงินเอง', rep.manual_confirms + ' รายการ'],
+      ['ยกเลิกหลังชำระเงิน', rep.cancelled_paid.orders + ' ออเดอร์ ' + baht(rep.cancelled_paid.revenue)],
+    ];
+    if (counted != null) {
+      lines.push(['เงินสดที่นับได้', baht(counted)], ['ส่วนต่าง', (counted - rep.cash_satang >= 0 ? '+' : '') + baht(counted - rep.cash_satang)]);
+    }
+    if (note) lines.push(['หมายเหตุ', note]);
+    return lines;
+  }
+
+  function printReport(rep, counted, note) {
+    const w = window.open('', '_blank');
+    if (!w) { toast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ ให้อนุญาตป๊อปอัปแล้วลองใหม่'); return; }
+    const rows = reportLines(rep, counted, note).map(([k, v]) => '<tr><td>' + esc(k) + '</td><td style="text-align:right">' + esc(v) + '</td></tr>').join('');
+    const items = (rep.top_items || []).slice(0, 10).map((i) => '<tr><td>' + esc(i.name) + '</td><td style="text-align:right">' + esc(i.qty) + ' ชิ้น</td></tr>').join('');
+    w.document.write('<!doctype html><meta charset="utf-8"><title>รายงานปิดยอด ' + esc(rep.day) + '</title><body style="font:16px sans-serif;max-width:420px;margin:20px auto"><h2>' + esc(window.SHOP || '') + '</h2><h3>รายงานปิดยอด ' + esc(label('day', rep.day)) + '</h3><table style="width:100%;border-collapse:collapse" cellpadding="4">' + rows + '</table>' + (items ? '<h4>สินค้าขายดี</h4><table style="width:100%" cellpadding="3">' + items + '</table>' : '') + '<p style="margin-top:24px">ลงชื่อ ____________________</p></body>');
+    w.document.close();
+    w.focus();
+    w.print();
+  }
+
+  async function openClose() {
+    let rep;
+    try { rep = await api('GET', '/api/day/preview?day=' + state.date); } catch (err) { toast(err.message); return; }
+    const counted = h('input', { inputmode: 'decimal', autocomplete: 'off', placeholder: 'เช่น 1250 (เว้นว่างถ้าไม่ได้นับ)' });
+    const note = h('input', { maxlength: 200, autocomplete: 'off', placeholder: 'หมายเหตุ (ไม่บังคับ)' });
+    const diff = h('p', { class: 'muted', style: 'margin:6px 0 0' });
+    const paintDiff = () => {
+      const c = satangOf(counted.value);
+      diff.textContent = c == null ? '' : 'ส่วนต่าง ' + (c - rep.cash_satang >= 0 ? '+' : '') + baht(c - rep.cash_satang) + (c === rep.cash_satang ? ' (ตรงพอดี)' : '');
+    };
+    counted.addEventListener('input', paintDiff);
+    const close = () => overlay.remove();
+    const closeBtn = h('button', { class: 'btn primary block', type: 'button' }, 'ปิดยอดวัน');
+    closeBtn.addEventListener('click', async () => {
+      closeBtn.disabled = true;
+      try {
+        const c = counted.value.trim() ? satangOf(counted.value) : null;
+        if (counted.value.trim() && c == null) throw new Error('ใส่จำนวนเงินสดที่นับเป็นตัวเลข');
+        await api('POST', '/api/day/close', { day: rep.day, cash_counted_satang: c, note: note.value });
+        toast('ปิดยอดแล้ว เก็บรายงานไว้ให้');
+        close();
+        load();
+      } catch (err) { toast(err.message); closeBtn.disabled = false; }
+    });
+    const overlay = h('div', { class: 'modal open close-modal' },
+      h('div', { class: 'sheet left', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'ปิดยอดวัน' },
+        h('h3', { style: 'margin-bottom:4px' }, 'ปิดยอด ' + label('day', rep.day)),
+        rep.closed ? h('p', { class: 'warnbox' }, 'วันนี้ปิดยอดไปแล้วเมื่อ ' + rep.closed.closed_at + ' โดย ' + rep.closed.closed_by + ' ปิดซ้ำได้ รายงานล่าสุดจะใช้แทน') : null,
+        h('div', null, ...reportLines(rep, null, '').map(([k, v]) => h('div', { class: 'brow' }, h('span', null, k), h('b', { class: 'num' }, v)))),
+        h('label', { class: 'field', style: 'margin-top:12px' }, h('span', null, 'นับเงินสดในลิ้นชักได้เท่าไร (บาท)'), counted),
+        diff,
+        h('label', { class: 'field' }, h('span', null, 'หมายเหตุ'), note),
+        h('div', { class: 'btns' }, closeBtn,
+          h('button', { class: 'btn block', type: 'button', onclick: () => printReport(rep, counted.value.trim() ? satangOf(counted.value) : null, note.value) }, 'พิมพ์รายงาน'),
+          h('button', { class: 'btn block', type: 'button', onclick: close }, 'ปิดหน้านี้'))));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.body.append(overlay);
+    counted.focus();
+  }
+
+  function closesCard() {
+    const list = state.closes || [];
+    return h('section', { class: 'card' },
+      h('div', { class: 'cardhead' }, h('h2', null, 'ประวัติการปิดยอด')),
+      list.length ? h('ul', { class: 'slips' }, ...list.slice(0, 15).map((c) => h('li', { class: 'slip' },
+        h('div', { class: 'slip-top' },
+          h('b', null, label('day', c.day)),
+          h('span', { class: 'muted' }, 'ปิดโดย ' + c.closed_by + ' · ' + c.closed_at),
+          h('b', { class: 'slip-amt num' }, baht(c.revenue_satang))),
+        h('div', { class: 'slip-meta muted' }, ['เงินสด ' + baht(c.cash_satang), 'โอน ' + baht(c.qr_satang), c.cash_counted_satang == null ? 'ไม่ได้นับเงินสด' : 'นับได้ ' + baht(c.cash_counted_satang) + ' ต่าง ' + (c.difference_satang >= 0 ? '+' : '') + baht(c.difference_satang), c.manual_confirms ? 'ยืนยันเอง ' + c.manual_confirms : null, c.note || null].filter(Boolean).join(' · ')))))
+        : h('p', { class: 'muted empty' }, 'ยังไม่เคยปิดยอด กดปุ่ม “ปิดยอดวัน” ด้านบนเมื่อจบวัน'));
+  }
+
   function render() {
     renderControls();
     const view = $('#view');
@@ -308,6 +398,7 @@
         cancelled(d))),
       slipsCard(d),
       auditCard(d),
+      closesCard(),
     ]);
   }
 

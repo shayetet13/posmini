@@ -22,6 +22,8 @@ pub struct Config {
     pub print_dump: Option<PathBuf>,
     /// Optional Thai font file (`PRINT_FONT`) for image printing; Windows fonts are used otherwise.
     pub print_font: Option<PathBuf>,
+    /// Where backups of the database are kept (`BACKUP_DIR`); default is next to the database.
+    pub backup_dir: Option<PathBuf>,
 }
 
 fn var(name: &str) -> String {
@@ -69,6 +71,9 @@ impl Config {
                 .filter(|p| !p.is_empty())
                 .map(PathBuf::from),
             print_font: Some(var("PRINT_FONT"))
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from),
+            backup_dir: Some(var("BACKUP_DIR"))
                 .filter(|p| !p.is_empty())
                 .map(PathBuf::from),
         })

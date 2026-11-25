@@ -2,7 +2,9 @@ mod admin;
 mod api;
 mod audit;
 mod auth;
+mod backup;
 mod bill;
+mod closing;
 mod config;
 mod dashboard;
 mod db;
@@ -97,6 +99,12 @@ fn router(state: AppState) -> Router {
         .route("/api/settings/bot", get(admin::bot_status))
         .route("/api/settings/routes", get(admin::list_routes))
         .route("/api/me", get(staff::me))
+        .route("/api/day/preview", get(closing::preview))
+        .route("/api/day/close", post(closing::close))
+        .route("/api/day/closes", get(closing::list))
+        .route("/api/backup", post(backup::download))
+        .route("/api/backup/files", get(backup::list))
+        .route("/api/backup/files/{name}", get(backup::file))
         .route("/api/users", get(staff::list).post(staff::create))
         .route("/api/users/{id}", put(staff::update).delete(staff::remove))
         .route("/api/settings/reset-sales", post(admin::reset_sales))
@@ -157,6 +165,7 @@ async fn main() -> Result<()> {
 
     tokio::spawn(orders::run_poller(state.clone()));
     tokio::spawn(printq::run_worker(state.clone()));
+    tokio::spawn(backup::run_scheduler(state.clone()));
 
     let listener = TcpListener::bind(&bind_addr)
         .await

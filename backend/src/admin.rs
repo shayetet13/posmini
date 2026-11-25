@@ -710,7 +710,13 @@ pub const RESET_SALES_CONFIRM: &str = "reset-sales";
 #[derive(Deserialize)]
 pub struct ResetSalesReq {
     confirm: String,
+    /// The admin's own password: a stray click or a borrowed screen cannot wipe the day.
+    #[serde(default)]
+    password: String,
 }
+
+const RESET_TRIES: usize = 5;
+const RESET_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Starts the shop over for sales: every order, payment and print job is deleted and the queue
 /// starts again at the first number. The menu and every setting stay as they are.
@@ -721,6 +727,14 @@ pub async fn reset_sales(
 ) -> ApiResult<Json<Value>> {
     if req.confirm != RESET_SALES_CONFIRM {
         return Err(ApiError::BadRequest("ต้องยืนยันก่อนล้างยอดขาย"));
+    }
+    let tries = format!("reset:{}", admin.id);
+    if state.is_limited(&tries, RESET_TRIES, RESET_WINDOW) {
+        return Err(ApiError::TooMany);
+    }
+    if !crate::auth::password_matches(&state, admin.id, &req.password).await? {
+        state.record_hit(&tries);
+        return Err(ApiError::BadRequest("รหัสผ่านแอดมินไม่ถูกต้อง"));
     }
     let shop = state.shop.id;
     let mut tx = state.pool.begin().await?;

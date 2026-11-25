@@ -15,6 +15,8 @@ pub mod action {
     pub const CANCEL_PAID: &str = "cancel_paid";
     pub const CALL_SKIP: &str = "call_skip";
     pub const RESET_SALES: &str = "reset_sales";
+    pub const CLOSE_DAY: &str = "close_day";
+    pub const BACKUP: &str = "backup";
     pub const STAFF_ADDED: &str = "staff_added";
     pub const STAFF_CHANGED: &str = "staff_changed";
     pub const STAFF_REMOVED: &str = "staff_removed";

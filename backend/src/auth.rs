@@ -116,6 +116,18 @@ impl FromRequestParts<AppState> for Admin {
     }
 }
 
+/// Checks a password against the stored hash of this account (used to guard dangerous actions).
+pub async fn password_matches(state: &AppState, user_id: i64, password: &str) -> Result<bool> {
+    let stored: Option<String> = sqlx::query_scalar(
+        "SELECT password_hash FROM users WHERE id = ? AND shop_id = ? AND active = 1",
+    )
+    .bind(user_id)
+    .bind(state.shop.id)
+    .fetch_optional(&state.pool)
+    .await?;
+    Ok(stored.is_some_and(|hash| verify_password(password, &hash)))
+}
+
 pub fn client_key(headers: &HeaderMap, peer: SocketAddr, trust_proxy: bool) -> String {
     // Behind Cloudflare / Railway the TCP peer is the proxy; these headers carry the visitor.
     if trust_proxy

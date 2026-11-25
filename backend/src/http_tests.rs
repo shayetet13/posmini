@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::{
+    backup,
     bill::BillSettings,
     config::Config,
     db, orders,
@@ -42,6 +43,7 @@ fn config(serve_ui: bool, db_path: &Path) -> Config {
         pay_defaults: PaySettings::default(),
         print_dump: None,
         print_font: None,
+        backup_dir: Some(PathBuf::from(format!("{}-backups", db_path.display()))),
     }
 }
 
@@ -74,6 +76,7 @@ impl Drop for Client {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", self.db.display()));
         }
+        let _ = std::fs::remove_dir_all(format!("{}-backups", self.db.display()));
     }
 }
 
@@ -503,7 +506,7 @@ async fn the_bot_list_for_choosing_needs_a_login_and_explains_when_it_cannot_be_
 #[tokio::test]
 async fn resetting_sales_clears_orders_and_restarts_the_queue_but_keeps_the_menu() {
     let mut client = Client::new("reset-sales", false).await;
-    let body = json!({ "confirm": "reset-sales" });
+    let body = json!({ "confirm": "reset-sales", "password": ADMIN_PASSWORD });
     assert_eq!(
         client
             .post("/api/settings/reset-sales", body.clone())
@@ -612,7 +615,7 @@ async fn a_promptpay_payment_leaves_a_slip_that_outlives_the_orders() {
     let reset = client
         .post(
             "/api/settings/reset-sales",
-            json!({ "confirm": "reset-sales" }),
+            json!({ "confirm": "reset-sales", "password": ADMIN_PASSWORD }),
         )
         .await;
     assert_eq!(reset.status, StatusCode::OK);
@@ -1134,6 +1137,12 @@ async fn admin_and_cashier(name: &str) -> (Client, Client) {
     (admin, cashier)
 }
 
+async fn order_action(client: &Client, id: i64, what: &str) -> Reply {
+    client
+        .post(&format!("/api/orders/{id}/{what}"), json!({}))
+        .await
+}
+
 fn today_bangkok() -> String {
     (chrono::Utc::now() + chrono::Duration::hours(7))
         .format("%Y-%m-%d")
@@ -1166,7 +1175,7 @@ async fn a_cashier_can_sell_but_not_reach_setup_takings_or_accounts() {
     // What sets the shop up, shows the takings or manages people does not.
     let dashboard = format!("/api/dashboard?period=day&date={}", today_bangkok());
     let new_product = json!({ "name": "x", "category": "", "price_satang": 100 });
-    let reset = json!({ "confirm": "reset-sales" });
+    let reset = json!({ "confirm": "reset-sales", "password": ADMIN_PASSWORD });
     for (what, status) in [
         ("dashboard", cashier.get(&dashboard).await.status),
         ("users", cashier.get("/api/users").await.status),
@@ -1329,11 +1338,265 @@ async fn manual_confirms_and_cancellations_are_recorded_with_who_did_them() {
     admin
         .post(
             "/api/settings/reset-sales",
-            json!({ "confirm": "reset-sales" }),
+            json!({ "confirm": "reset-sales", "password": ADMIN_PASSWORD }),
         )
         .await;
     let after = admin.get(&dashboard).await.json()["audit"].clone();
     assert_eq!(after["counts"]["reset_sales"], 1);
     assert_eq!(after["counts"]["staff_added"], 1);
     assert_eq!(after["counts"]["confirm_manual"], 2);
+}
+
+// ----------------------------------------------------------- close the day, reset, backup
+
+#[tokio::test]
+async fn the_reset_needs_the_admins_password_and_stops_guessing() {
+    let mut client = Client::new("reset-password", false).await;
+    client.login().await;
+    let product = client.first_product().await;
+    client.cash_order(product, None).await;
+    let active = || async {
+        client
+            .get("/api/orders/active")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len()
+    };
+
+    for wrong in [
+        json!({ "confirm": "reset-sales" }),
+        json!({ "confirm": "reset-sales", "password": "nope" }),
+    ] {
+        let refused = client.post("/api/settings/reset-sales", wrong).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            refused.text()
+        );
+    }
+    assert_eq!(active().await, 1, "nothing was deleted");
+
+    // Guessing is limited: after five misses even the right password waits.
+    for _ in 0..3 {
+        client
+            .post(
+                "/api/settings/reset-sales",
+                json!({ "confirm": "reset-sales", "password": "guess" }),
+            )
+            .await;
+    }
+    let locked = client
+        .post(
+            "/api/settings/reset-sales",
+            json!({ "confirm": "reset-sales", "password": ADMIN_PASSWORD }),
+        )
+        .await;
+    assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(active().await, 1);
+}
+
+#[tokio::test]
+async fn closing_the_day_freezes_the_takings_and_the_cash_difference() {
+    let (admin, cashier) = admin_and_cashier("close-day").await;
+    let product = cashier.first_product().await;
+    let day = today_bangkok();
+
+    // 2 cash sales, one QR payment confirmed by hand, one confirmed by the bank check.
+    cashier.cash_order(product, None).await;
+    cashier.cash_order(product, None).await;
+    let promptpay =
+        json!({ "method": "promptpay", "items": [{ "product_id": product, "qty": 1 }] });
+    let by_hand = cashier.post("/api/orders", promptpay.clone()).await.json()["id"]
+        .as_i64()
+        .unwrap();
+    order_action(&cashier, by_hand, "confirm").await;
+    let by_bank = cashier.post("/api/orders", promptpay).await.json()["id"]
+        .as_i64()
+        .unwrap();
+    orders::mark_paid(
+        &admin.state,
+        by_bank,
+        Some(orders::ExternalPayment {
+            id: "pp_close-1".into(),
+            bank: Some("scb".into()),
+            payer_name: None,
+        }),
+    )
+    .await
+    .ok()
+    .unwrap();
+
+    let preview = admin
+        .get(&format!("/api/day/preview?day={day}"))
+        .await
+        .json();
+    assert_eq!(preview["orders"], 4);
+    assert_eq!(preview["manual_confirms"], 1);
+    assert_eq!(preview["verified_payments"], 1);
+    assert_eq!(preview["closed"], Value::Null);
+    let cash = preview["cash_satang"].as_i64().unwrap();
+    let revenue = preview["revenue_satang"].as_i64().unwrap();
+    assert!(
+        cash > 0 && revenue > cash,
+        "cash {cash} of revenue {revenue}"
+    );
+    assert_eq!(preview["qr_satang"].as_i64().unwrap() + cash, revenue);
+
+    // 5 baht short in the drawer.
+    let closed = admin
+        .post(
+            "/api/day/close",
+            json!({ "cash_counted_satang": cash - 500, "note": "ทอนผิด" }),
+        )
+        .await;
+    assert_eq!(closed.status, StatusCode::OK, "{}", closed.text());
+    assert_eq!(closed.json()["difference_satang"], -500);
+
+    let after = admin
+        .get(&format!("/api/day/preview?day={day}"))
+        .await
+        .json();
+    assert_eq!(after["closed"]["closed_by"], "admin");
+    assert_eq!(after["closed"]["difference_satang"], -500);
+    let history = admin.get("/api/day/closes").await.json();
+    assert_eq!(history[0]["day"], day);
+    assert_eq!(history[0]["revenue_satang"], revenue);
+    assert_eq!(history[0]["note"], "ทอนผิด");
+
+    // A cashier cannot see or make closings; the future and nonsense are refused; it is recorded.
+    assert_eq!(
+        cashier.get("/api/day/closes").await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        cashier.post("/api/day/close", json!({})).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        admin
+            .post("/api/day/close", json!({ "day": "2999-01-01" }))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        admin
+            .post("/api/day/close", json!({ "day": "not-a-day" }))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        admin
+            .post("/api/day/close", json!({ "cash_counted_satang": -1 }))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let audit = admin
+        .get(&format!("/api/dashboard?period=day&date={day}"))
+        .await
+        .json()["audit"]
+        .clone();
+    assert_eq!(audit["counts"]["close_day"], 1);
+
+    // The sales reset leaves the closing report in place.
+    admin
+        .post(
+            "/api/settings/reset-sales",
+            json!({ "confirm": "reset-sales", "password": ADMIN_PASSWORD }),
+        )
+        .await;
+    assert_eq!(
+        admin
+            .get("/api/day/closes")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_backup_is_a_whole_working_copy_only_an_admin_can_take() {
+    let (admin, cashier) = admin_and_cashier("backup").await;
+    let product = admin.first_product().await;
+    admin.cash_order(product, None).await;
+    admin.cash_order(product, None).await;
+
+    assert_eq!(
+        cashier.post("/api/backup", json!({})).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        cashier.get("/api/backup/files").await.status,
+        StatusCode::FORBIDDEN
+    );
+    let taken = admin.post("/api/backup", json!({})).await;
+    assert_eq!(taken.status, StatusCode::OK);
+    assert!(
+        taken
+            .headers
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("posmini-"),
+        "named like a backup"
+    );
+    backup::looks_like_sqlite(&taken.body).expect("a SQLite file");
+
+    // The copy opens as a database that has the sales in it.
+    let path =
+        std::env::temp_dir().join(format!("posmini-restore-check-{}.db", std::process::id()));
+    std::fs::write(&path, &taken.body).unwrap();
+    let copy = db::connect(&format!("sqlite://{}?mode=rwc", path.display()))
+        .await
+        .unwrap();
+    let orders: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+        .fetch_one(&copy)
+        .await
+        .unwrap();
+    assert_eq!(orders, 2);
+    copy.close().await;
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+
+    // The kept copy is listed and downloadable by name; nothing else on the disk is.
+    let listed = admin.get("/api/backup/files").await.json();
+    let name = listed["files"][0]["name"].as_str().unwrap().to_string();
+    let again = admin.get(&format!("/api/backup/files/{name}")).await;
+    assert_eq!(again.status, StatusCode::OK);
+    backup::looks_like_sqlite(&again.body).unwrap();
+    for hostile in [
+        "..%2F..%2Fetc%2Fpasswd",
+        "posmini-x.txt",
+        "secret.db",
+        "posmini-..%2Fx.db",
+    ] {
+        let refused = admin.get(&format!("/api/backup/files/{hostile}")).await;
+        assert!(
+            matches!(
+                refused.status,
+                StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST
+            ),
+            "{hostile} -> {}",
+            refused.status
+        );
+    }
+    let audit = admin
+        .get(&format!(
+            "/api/dashboard?period=day&date={}",
+            today_bangkok()
+        ))
+        .await
+        .json()["audit"]
+        .clone();
+    assert_eq!(audit["counts"]["backup"], 2, "both downloads are recorded");
 }
