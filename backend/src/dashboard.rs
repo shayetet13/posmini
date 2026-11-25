@@ -505,10 +505,12 @@ type SlipRow = (
     Option<String>,
     String,
     String,
+    String,
+    Option<i64>,
 );
 
-/// The PromptPay payments of the period, newest first: the slip (payer, bank, reference, what
-/// was bought). Kept in `payment_slips`, so past days stay available.
+/// The payments of the period (cash and PromptPay), newest first: the slip (payer, bank,
+/// reference, what was bought). Kept in `payment_slips`, so past days stay available.
 async fn slips(
     pool: &SqlitePool,
     shop_id: i64,
@@ -518,8 +520,9 @@ async fn slips(
     let (from, to) = range.utc_bounds();
     let sql = format!(
         "SELECT order_id, queue_no, amount_satang, verified, payer_name, bank, external_id, items, \
-         strftime('%Y-%m-%d %H:%M:%S', paid_at, '+{BANGKOK_OFFSET_HOURS} hours') \
-         FROM payment_slips WHERE shop_id = ? AND method = 'promptpay' \
+         strftime('%Y-%m-%d %H:%M:%S', paid_at, '+{BANGKOK_OFFSET_HOURS} hours'), method, \
+         cash_received_satang \
+         FROM payment_slips WHERE shop_id = ? AND method IN ('promptpay', 'cash') \
          AND paid_at >= ? AND paid_at < ? ORDER BY paid_at DESC, id DESC LIMIT {SLIPS_LIMIT}"
     );
     let rows: Vec<SlipRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
@@ -531,7 +534,19 @@ async fn slips(
     Ok(rows
         .into_iter()
         .map(
-            |(order_id, queue_no, amount, verified, payer, bank, reference, items, at)| {
+            |(
+                order_id,
+                queue_no,
+                amount,
+                verified,
+                payer,
+                bank,
+                reference,
+                items,
+                at,
+                method,
+                received,
+            )| {
                 json!({
                     "order_id": order_id,
                     "queue_label": queue_no.map(|no| bill.queue_label(no)),
@@ -542,6 +557,8 @@ async fn slips(
                     "reference": reference,
                     "items": serde_json::from_str::<Value>(&items).unwrap_or_else(|_| json!([])),
                     "paid_at": at,
+                    "method": method,
+                    "cash_received_satang": received,
                 })
             },
         )

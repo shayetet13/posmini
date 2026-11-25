@@ -694,7 +694,7 @@ pub async fn mark_paid(
         None => (None, None, None),
     };
     let (bank_shown, payer_shown) = (bank.clone(), payer.clone());
-    let slip = (method == "promptpay").then(|| (external_id.clone(), bank.clone(), payer.clone()));
+    let slip = (external_id.clone(), bank.clone(), payer.clone());
     sqlx::query(
         "INSERT INTO payments (shop_id, order_id, amount_satang, method, external_id, bank, payer_name) \
          VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(external_id) DO NOTHING",
@@ -708,15 +708,19 @@ pub async fn mark_paid(
     .bind(payer)
     .execute(&mut *tx)
     .await?;
-    // The slip: a permanent copy of the payment (who, which bank, how much, what was bought)
-    // that stays even when orders are cleared, so the dashboard can show it for any past day.
-    if let Some((external_id, bank, payer)) = slip {
+    // The slip: a permanent copy of the payment, cash or PromptPay (who, which bank, how much,
+    // what was bought) that stays even when orders are cleared, so the dashboard can show it for
+    // any past day.
+    {
+        let (external_id, bank, payer) = slip;
         sqlx::query(
             "INSERT OR IGNORE INTO payment_slips (shop_id, order_id, queue_no, queue_date, \
-             amount_satang, method, verified, payer_name, bank, external_id, items) \
+             amount_satang, method, verified, payer_name, bank, external_id, items, \
+             cash_received_satang) \
              SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT json_group_array(\
              json_object('name', name, 'qty', qty, 'price', unit_price_satang)) \
-             FROM order_items WHERE order_id = ?), '[]')",
+             FROM order_items WHERE order_id = ?), '[]'), \
+             (SELECT cash_received_satang FROM orders WHERE id = ?)",
         )
         .bind(state.shop.id)
         .bind(order_id)
@@ -728,6 +732,7 @@ pub async fn mark_paid(
         .bind(payer)
         .bind(bank)
         .bind(external_id)
+        .bind(order_id)
         .bind(order_id)
         .execute(&mut *tx)
         .await?;

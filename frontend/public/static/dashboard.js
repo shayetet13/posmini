@@ -11,7 +11,7 @@
   const REFRESH_DEBOUNCE_MS = 800;
 
   const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
-  const state = { period: 'day', date: today(), data: null, error: null, seq: 0, closes: [], slipPage: 0 };
+  const state = { period: 'day', date: today(), data: null, error: null, seq: 0, closes: [], slipPage: 0, slipFilter: 'all' };
   let refreshTimer;
 
   // ---- dates: `state.date` is always a full YYYY-MM-DD; the API gets the part the period needs
@@ -82,6 +82,7 @@
   function go(change) {
     Object.assign(state, change);
     state.slipPage = 0;
+    state.slipFilter = 'all';
     state.data = null;
     render();
     load();
@@ -242,7 +243,13 @@
         h('b', { class: 'num' }, baht(d.totals.discounts))) : null);
   }
 
-  // ---- slips: every PromptPay payment of the period, kept for good (who paid, bank, reference)
+  // ---- slips: every payment of the period, cash or PromptPay, kept for good (who paid, bank, reference)
+  const SLIP_FILTERS = [['all', 'ทั้งหมด'], ['promptpay', 'QR พร้อมเพย์'], ['cash', 'เงินสด']];
+  const isCash = (s) => s.method === 'cash';
+  const slipBadge = (s) => (isCash(s) ? h('span', { class: 'badge' }, 'เงินสด')
+    : h('span', { class: 'badge ' + (s.verified ? 'ok' : 'warn') }, s.verified ? '✓ ตรวจยอดแล้ว' : 'พนักงานกดยืนยัน'));
+  const slipChange = (s) => (isCash(s) && s.cash_received_satang != null ? s.cash_received_satang - s.amount_satang : null);
+
   function slipTime(at) {
     const [date, time] = at.split(' ');
     if (state.period === 'day') return time;
@@ -260,24 +267,26 @@
     const line = (k, v) => (v == null || v === '' ? null : h('div', { class: 'brow' }, h('span', null, k), h('b', { class: 'num slip-v' }, v)));
     const overlay = h('div', { class: 'modal open close-modal' },
       h('div', { class: 'sheet left', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'รายละเอียดสลิป' },
-        h('h3', { style: 'margin-bottom:4px' }, 'สลิปการโอน ' + (s.queue_label || '')),
-        h('span', { class: 'badge ' + (s.verified ? 'ok' : 'warn') }, s.verified ? '✓ ตรวจยอดแล้ว' : 'พนักงานกดยืนยัน'),
+        h('h3', { style: 'margin-bottom:4px' }, (isCash(s) ? 'สลิปเงินสด ' : 'สลิปการโอน ') + (s.queue_label || '')),
+        slipBadge(s),
         h('div', { style: 'margin-top:10px' },
           line('วันที่ เวลา', s.paid_at),
           line('ออเดอร์', '#' + s.order_id),
           line('คิว', s.queue_label),
           line('จำนวนเงิน', baht(s.amount_satang)),
+          isCash(s) ? line('รับเงินสดมา', s.cash_received_satang != null ? baht(s.cash_received_satang) : 'ไม่ได้กรอกจำนวนที่รับ') : null,
+          isCash(s) ? line('เงินทอน', slipChange(s) != null ? baht(slipChange(s)) : null) : null,
           line('ธนาคาร', s.bank ? (BANKS[s.bank] || String(s.bank).toUpperCase()) : null),
           line('ผู้โอน', s.payer_name),
           line('เลขอ้างอิง', s.reference),
-          line('วิธีรับเงิน', s.verified ? 'ระบบตรวจยอดเงินเข้าเอง' : 'พนักงานกดยืนยันเอง ไม่มีข้อมูลจากธนาคาร')),
+          line('วิธีรับเงิน', isCash(s) ? 'เงินสด' : s.verified ? 'ระบบตรวจยอดเงินเข้าเอง' : 'พนักงานกดยืนยันเอง ไม่มีข้อมูลจากธนาคาร')),
         h('h4', { style: 'margin:14px 0 4px' }, 'รายการที่ซื้อ'),
         items.length ? h('div', null,
           ...items.map((i) => h('div', { class: 'brow' },
             h('span', null, i.name + ' × ' + i.qty + (i.price ? ' (' + baht(i.price) + ')' : '')),
             h('b', { class: 'num' }, i.price ? baht(i.price * i.qty) : ''))),
           off > 0 ? h('div', { class: 'brow' }, h('span', null, 'ส่วนลด'), h('b', { class: 'num' }, '−' + baht(off))) : null,
-          h('div', { class: 'brow' }, h('b', null, 'รวมที่โอน'), h('b', { class: 'num' }, baht(s.amount_satang))))
+          h('div', { class: 'brow' }, h('b', null, isCash(s) ? 'รวมที่ต้องจ่าย' : 'รวมที่โอน'), h('b', { class: 'num' }, baht(s.amount_satang))))
           : h('p', { class: 'muted' }, 'ไม่มีรายการสินค้าเก็บไว้'),
         h('div', { class: 'btns' }, h('button', { class: 'btn primary block', type: 'button', onclick: close }, 'ปิด'))));
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
@@ -293,17 +302,19 @@
       h('div', { class: 'slip-top' },
         h('span', { class: 'slip-time num' }, slipTime(s.paid_at)),
         h('b', { class: 'slip-q num' }, s.queue_label || '—'),
-        h('span', { class: 'badge ' + (s.verified ? 'ok' : 'warn') }, s.verified ? '✓ ตรวจยอดแล้ว' : 'พนักงานกดยืนยัน'),
+        slipBadge(s),
         h('b', { class: 'slip-amt num' }, baht(s.amount_satang))),
       h('div', { class: 'slip-meta muted' },
-        [s.bank ? (BANKS[s.bank] || String(s.bank).toUpperCase()) : null, s.payer_name ? 'ผู้โอน ' + s.payer_name : null, s.reference ? 'อ้างอิง ' + s.reference : null, 'ออเดอร์ #' + s.order_id]
+        [isCash(s) && s.cash_received_satang != null ? 'รับมา ' + baht(s.cash_received_satang) + ' · ทอน ' + baht(slipChange(s)) : null,
+          s.bank ? (BANKS[s.bank] || String(s.bank).toUpperCase()) : null, s.payer_name ? 'ผู้โอน ' + s.payer_name : null, s.reference ? 'อ้างอิง ' + s.reference : null, 'ออเดอร์ #' + s.order_id]
           .filter(Boolean).join(' · ')),
       items ? h('div', { class: 'slip-items' }, items) : null);
   }
 
   // The server sends the slips newest first; the card shows them SLIPS_PER_PAGE at a time.
   function slipsCard(d) {
-    const list = d.slips || [];
+    const all = d.slips || [];
+    const list = state.slipFilter === 'all' ? all : all.filter((s) => s.method === state.slipFilter);
     const total = list.reduce((sum, s) => sum + s.amount_satang, 0);
     const pages = Math.max(1, Math.ceil(list.length / SLIPS_PER_PAGE));
     state.slipPage = Math.min(Math.max(state.slipPage, 0), pages - 1);
@@ -317,10 +328,16 @@
       h('button', { class: 'btn small', type: 'button', disabled: state.slipPage === 0, onclick: () => turn(state.slipPage - 1) }, '‹ ใหม่กว่า'),
       h('span', { class: 'muted num' }, 'หน้า ' + (state.slipPage + 1) + ' / ' + pages + ' · รายการที่ ' + (from + 1) + '–' + Math.min(from + SLIPS_PER_PAGE, list.length)),
       h('button', { class: 'btn small', type: 'button', disabled: state.slipPage >= pages - 1, onclick: () => turn(state.slipPage + 1) }, 'เก่ากว่า ›')) : null;
+    const filters = h('div', { class: 'chips', role: 'tablist', 'aria-label': 'กรองสลิป' }, ...SLIP_FILTERS.map(([key, text]) => {
+      const n = key === 'all' ? all.length : all.filter((s) => s.method === key).length;
+      return h('button', { class: 'chip small' + (key === state.slipFilter ? ' on' : ''), type: 'button', role: 'tab', 'aria-selected': key === state.slipFilter,
+        onclick: () => { state.slipFilter = key; state.slipPage = 0; const old = $('#slipscard'); if (old) old.replaceWith(slipsCard(d)); } }, text + ' ' + n);
+    }));
     return h('section', { class: 'card', id: 'slipscard' },
-      h('div', { class: 'cardhead' }, h('h2', null, 'สลิปการโอนเงิน (พร้อมเพย์)'),
+      h('div', { class: 'cardhead' }, h('h2', null, 'สลิปการขาย (เงินสด และ QR พร้อมเพย์)'),
         h('span', { class: 'muted' }, list.length ? list.length.toLocaleString('th-TH') + ' รายการ · ' + baht(total) : '')),
-      h('p', { class: 'muted note' }, 'บันทึกทุกครั้งที่ระบบตรวจยอดเงินเข้าสำเร็จ เก็บถาวร ย้อนดูวันอื่นได้ด้วยตัวเลือกวันที่ด้านบน แม้กดล้างยอดขายแล้วก็ยังอยู่'),
+      h('p', { class: 'muted note' }, 'บันทึกทุกครั้งที่ขายสำเร็จ ทั้งเงินสดและโอน เก็บถาวร ย้อนดูวันอื่นได้ด้วยตัวเลือกวันที่ด้านบน แม้กดล้างยอดขายแล้วก็ยังอยู่'),
+      filters,
       list.length ? h('ul', { class: 'slips' }, ...list.slice(from, from + SLIPS_PER_PAGE).map(slipRow)) : h('p', { class: 'muted empty' }, 'ยังไม่มีสลิปในช่วงนี้'),
       pager,
       list.length >= 500 ? h('p', { class: 'muted note' }, 'แสดง 500 รายการล่าสุดของช่วงนี้ เลือกช่วงที่สั้นลงเพื่อดูรายการเก่ากว่า') : null);

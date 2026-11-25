@@ -570,7 +570,7 @@ async fn resetting_sales_clears_orders_and_restarts_the_queue_but_keeps_the_menu
 }
 
 #[tokio::test]
-async fn a_promptpay_payment_leaves_a_slip_that_outlives_the_orders() {
+async fn a_payment_leaves_a_slip_that_outlives_the_orders() {
     let mut client = Client::new("slips", false).await;
     client.login().await;
     let product = client.first_product().await;
@@ -587,14 +587,17 @@ async fn a_promptpay_payment_leaves_a_slip_that_outlives_the_orders() {
         .await;
     assert_eq!(order.status, StatusCode::OK, "{}", order.text());
     let id = order.json()["id"].as_i64().unwrap();
-    // Cash sales leave no slip; only the PromptPay one does, and only once it is paid.
-    client.cash_order(product, None).await;
-    assert!(
-        client.get(&dashboard).await.json()["slips"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    // A cash sale leaves a slip at once (with what was handed over); the PromptPay one only
+    // once it is paid.
+    let cash = client.cash_order(product, Some(100_000)).await.json();
+    let first = client.get(&dashboard).await.json()["slips"].clone();
+    let first = first.as_array().unwrap();
+    assert_eq!(first.len(), 1, "the unpaid QR order has no slip yet");
+    assert_eq!(first[0]["method"], "cash");
+    assert_eq!(first[0]["order_id"], cash["id"]);
+    assert_eq!(first[0]["amount_satang"], cash["total_satang"]);
+    assert_eq!(first[0]["cash_received_satang"], 100_000);
+    assert_eq!(first[0]["verified"], false);
     let paid = client
         .post(&format!("/api/orders/{id}/confirm"), json!({}))
         .await;
@@ -602,7 +605,9 @@ async fn a_promptpay_payment_leaves_a_slip_that_outlives_the_orders() {
 
     let slips = client.get(&dashboard).await.json()["slips"].clone();
     let slips = slips.as_array().unwrap();
-    assert_eq!(slips.len(), 1);
+    assert_eq!(slips.len(), 2);
+    assert_eq!(slips[0]["method"], "promptpay", "newest first");
+    assert_eq!(slips[1]["method"], "cash");
     assert_eq!(slips[0]["order_id"], id);
     assert_eq!(
         slips[0]["verified"], false,
@@ -624,7 +629,7 @@ async fn a_promptpay_payment_leaves_a_slip_that_outlives_the_orders() {
             .as_array()
             .unwrap()
             .len(),
-        1
+        2
     );
 }
 
