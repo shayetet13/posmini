@@ -34,7 +34,7 @@
   function renderGrid() {
     const list = PM.menuLevel(state.products, state.path, state.cat === ALL ? null : state.cat);
     // The customer's phone keeps the price on the card: they pay it.
-    const tile = (p) => PM.menuTile(p, { products: state.products, qty: state.cart.get(p.id), showPrice: true, onAdd: (id) => change(id, 1), onRemove: (id) => change(id, -99), onOpen: (id) => goPath([...state.path, id]) });
+    const tile = (p) => PM.menuTile(p, { products: state.products, qty: state.cart.get(p.id), showPrice: true, onAdd: (id) => change(id, 1), onRemove: (id) => change(id, -1), onOpen: (id) => goPath([...state.path, id]) });
     $('#grid').replaceChildren(...(list.length ? list.map(tile)
       : [h('p', { class: 'muted empty' }, state.path.length ? 'กลุ่มนี้ยังไม่มีรายการ' : 'ยังไม่มีสินค้า')]));
   }

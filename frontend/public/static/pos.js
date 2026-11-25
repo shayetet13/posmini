@@ -40,7 +40,7 @@
 
   function renderGrid() {
     const list = PM.menuLevel(state.products, state.path, state.cat === ALL ? null : state.cat);
-    const tile = (p) => PM.menuTile(p, { products: state.products, qty: state.cart.get(p.id), onAdd: (id) => addToCart(id, 1), onRemove: (id) => addToCart(id, -99), onOpen: (id) => goPath([...state.path, id]) });
+    const tile = (p) => PM.menuTile(p, { products: state.products, qty: state.cart.get(p.id), onAdd: (id) => addToCart(id, 1), onRemove: (id) => addToCart(id, -1), onOpen: (id) => goPath([...state.path, id]) });
     $('#grid').replaceChildren(...(list.length ? list.map(tile)
       : [h('p', { class: 'muted empty' }, state.path.length ? 'กลุ่มนี้ยังไม่มีรายการ เพิ่มได้ที่ จัดการ › เมนูสินค้า' : 'ยังไม่มีสินค้าในหมวดนี้ เพิ่มได้ที่ จัดการ › เมนูสินค้า')]));
   }

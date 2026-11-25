@@ -192,7 +192,7 @@
 
   // One card. A group opens (`onOpen`); an item is added (`onAdd`). `showPrice` keeps the price on
   // phones (the customer's own menu); the cashier's phone shows only the name. An item already in
-  // the cart also gets a trash button (`onRemove`) that takes the whole item out again.
+  // the cart also gets a minus button (`onRemove`) that takes one off.
   function menuTile(p, o) {
     const group = !!p.is_group;
     const out = !group && !!p.sold_out;
@@ -217,7 +217,7 @@
           h('span', { class: 'add', 'aria-hidden': 'true' }, icon(group ? 'chevronR' : 'plus')))));
     if (group || !qty || !o.onRemove) return tile;
     return h('div', { class: 'tilebox' }, tile,
-      h('button', { class: 'tile-del', type: 'button', 'aria-label': 'ลบ ' + p.name + ' ออกจากตะกร้า', title: 'ลบรายการนี้ออกจากตะกร้า', onclick: () => o.onRemove(p.id) }, icon('trash', 18)));
+      h('button', { class: 'tile-minus', type: 'button', 'aria-label': 'ลด ' + p.name + ' ลง 1', title: 'ลดจำนวนลง 1', onclick: () => o.onRemove(p.id) }, '−'));
   }
 
   // The way back out of the groups: a button per level, the last one is where you are.
