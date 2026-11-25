@@ -113,6 +113,7 @@
     download: '<path d="M12 4v11M7 11l5 5 5-5M5 20h14"/>',
     chevronL: '<path d="M15 5l-7 7 7 7"/>',
     chevronR: '<path d="M9 5l7 7-7 7"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.01"/>',
   };
 
   function icon(name, size) {
@@ -307,10 +308,15 @@
   }
 
   let toastTimer;
+  // A small card that drops in from the top. The first line is the headline; a line after a
+  // newline is the quieter explanation under it.
   function toast(message) {
     let el = $('#toast');
     if (!el) { el = h('div', { id: 'toast', class: 'toast', role: 'status', 'aria-live': 'polite' }); document.body.append(el); }
-    el.textContent = message;
+    const [title, ...rest] = String(message).split('\n');
+    el.replaceChildren(
+      h('span', { class: 'toast-ico' }, icon('info')),
+      h('div', { class: 'toast-body' }, h('span', { class: 'toast-title' }, title), rest.length ? h('span', { class: 'toast-sub' }, rest.join(' ')) : null));
     el.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
@@ -428,7 +434,7 @@
         speechSynthesis.speak(this.utter('เปิดเสียงแล้ว'));
       }
       this.chime();
-      if (!this.thai) toast('เครื่องนี้ยังไม่มีเสียงภาษาไทย (iPad: ตั้งค่า > การเข้าถึง > เนื้อหาที่พูด > เสียง > ไทย)');
+      if (!this.thai) toast('เครื่องนี้ยังไม่มีเสียงภาษาไทย\nบน iPad ไปที่ ตั้งค่า › การเข้าถึง › เนื้อหาที่พูด › เสียง › ไทย แล้วกลับมาเปิดเสียงอีกครั้ง');
     },
     bindButton(btn) {
       const paint = () => {

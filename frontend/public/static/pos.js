@@ -64,7 +64,11 @@
     $('#sum').textContent = total;
     $('#barSum').textContent = total;
     $('#barCount').textContent = cartCount() + ' รายการ';
-    $('#tabCart').textContent = cartCount() ? '(' + cartCount() + ')' : '';
+    // The phone's cart tab and the floating total only exist while there is something in the cart.
+    document.body.classList.toggle('has-cart', lines.length > 0);
+    $('#tabCartBtn').hidden = !lines.length;
+    $('#tabCart').textContent = cartCount() || '';
+    if (!lines.length && document.body.dataset.tab === 'cart') setTab('menu');
     $('#clear').hidden = !lines.length;
   }
 
