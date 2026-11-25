@@ -87,7 +87,8 @@
         h('div', { class: 'stepper' },
           h('button', { class: 'qb', type: 'button', 'aria-label': 'ลด ' + p.name, onclick: () => change(p.id, -1) }, '−'),
           h('span', { class: 'qty num' }, qty),
-          h('button', { class: 'qb', type: 'button', 'aria-label': 'เพิ่ม ' + p.name, onclick: () => change(p.id, 1) }, '+'))))
+          h('button', { class: 'qb', type: 'button', 'aria-label': 'เพิ่ม ' + p.name, onclick: () => change(p.id, 1) }, '+'),
+          h('button', { class: 'qb del', type: 'button', 'aria-label': 'ลบ ' + p.name + ' ออกจากตะกร้า', title: 'ลบรายการนี้', onclick: () => change(p.id, -99) }, PM.icon('trash', 16)))))
         : [h('p', { class: 'muted empty' }, 'ยังไม่ได้เลือกสินค้า')])),
       h('div', { class: 'perf' }),
       ls.length ? h('button', { class: 'chip small' + (state.orderNote ? ' on' : ''), type: 'button', style: 'margin-top:10px', onclick: editOrderNote }, state.orderNote ? '✎ ' + state.orderNote : '+ โน้ตถึงร้าน') : null,
