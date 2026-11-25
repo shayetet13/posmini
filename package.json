@@ -5,6 +5,7 @@
   "description": "Tooling only (Railway infrastructure as code, frontend tests). The app itself is Rust + static files.",
   "scripts": {
     "test": "node --test \"frontend/tests/*.test.js\"",
+    "test:e2e": "node --test frontend/tests/e2e/flow.e2e.js",
     "railway:plan": "railway config plan",
     "railway:apply": "railway config apply"
   },

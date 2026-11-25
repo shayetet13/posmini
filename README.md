@@ -87,6 +87,7 @@ cargo run --release        # http://localhost:8080/pos
 |----------|--------|----------|
 | Rust (unit + HTTP end-to-end) | `cargo fmt --check; cargo clippy --all-targets -- -D warnings; cargo test` | ล็อกอิน, ออเดอร์เงินสด/เงินทอน, รูปแบบเลขคิว, คิวพิมพ์เรียงลำดับและสถานีพิมพ์ผ่านเบราว์เซอร์, การเรียกคิวแซง, โหมด API-only |
 | Frontend (node:test) | `node --test "frontend/tests/*.test.js"` | เครื่องคิดเลข, ทุกหน้าโหลดไฟล์ที่มีจริง, ไม่มี placeholder ค้าง, เส้นทาง Caddy, backend ฝังไฟล์ static ครบ, ไอคอน/manifest ของแอป, service worker (จำลองสภาพแวดล้อมแล้วเช็กว่าไม่แคช API และออฟไลน์แล้วขึ้นหน้าสำรอง) |
+| End-to-end (โปรแกรมจริง + API ตรวจยอดและ LINE จำลอง) | `cargo build; node --test frontend/tests/e2e/flow.e2e.js` | ลูกค้าสั่งเองบนมือถือ → QR ใบเดียวต่อครั้ง → บอทตรวจยอดเข้า → ออกคิว → สลิป → เรียกคิว → ข้อความ LINE, ขายเงินสดพร้อมส่วนลด, ส่งยอดออฟไลน์ซ้ำแล้วได้ออเดอร์เดียว, ยกเลิกต้องมีเหตุผล (รันในโฟลเดอร์ชั่วคราวและไม่อ่านไฟล์ .env จึงไม่แตะระบบจริง) |
 | Smoke test (ระบบที่รันอยู่) | `bash scripts/smoke.sh <url>` | หน้าเว็บ, proxy ไป backend, SSE, API ถูกป้องกัน (ใส่ `SMOKE_ADMIN_PASSWORD` เพื่อทดสอบหลังล็อกอิน และ `SMOKE_WRITE=1` เพื่อบันทึกการขายทดสอบ 1 รายการ — ใช้กับระบบทดสอบเท่านั้น) |
 
 ## CI / CD

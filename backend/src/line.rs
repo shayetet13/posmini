@@ -52,7 +52,12 @@ impl LineSettings {
                 .map(|v| v.trim().to_string())
                 .unwrap_or_default()
         };
-        let base = get(KEY_BASE);
+        // The environment variable lets an end-to-end test point the app at a pretend LINE.
+        let base = Some(get(KEY_BASE))
+            .filter(|b| !b.is_empty())
+            .or_else(|| std::env::var("LINE_API_BASE").ok())
+            .unwrap_or_default();
+        let base = base.trim().to_string();
         Self {
             token: get(KEY_TOKEN),
             login_channel_id: get(KEY_LOGIN),

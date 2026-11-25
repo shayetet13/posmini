@@ -30,6 +30,13 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # The real binary against a pretend payment API and a pretend LINE: order, pay, call.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build
+      - name: End-to-end (sell, pay, call)
+        run: node --test frontend/tests/e2e/flow.e2e.js
 
   frontend:
     name: Frontend (static checks, calculator)
