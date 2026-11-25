@@ -254,6 +254,54 @@
     });
   }
 
+  // A small box with one line of text to fill in. Resolves to the trimmed text, or null when the
+  // person cancels. `required` stops an empty answer; `suggestions` are one-tap answers.
+  function askText(opts = {}) {
+    return new Promise((resolve) => {
+      const previous = document.activeElement;
+      const min = opts.required ? Math.max(1, opts.min || 1) : 0;
+      const input = h('input', { type: 'text', maxlength: opts.max || 60, placeholder: opts.placeholder || '', autocomplete: 'off', enterkeyhint: 'done' });
+      input.value = opts.value || '';
+      const warn = h('p', { class: 'warnbox', role: 'alert', hidden: true }, '');
+      const okBtn = h('button', { class: 'btn block ' + (opts.tone === 'danger' ? 'danger-fill' : 'primary'), type: 'button' }, opts.okText || 'ตกลง');
+      const cancelBtn = h('button', { class: 'btn block', type: 'button' }, opts.cancelText || 'ยกเลิก');
+      const overlay = h('div', { class: 'modal confirm-modal open' },
+        h('div', { class: 'sheet confirm asktext', role: 'dialog', 'aria-modal': 'true', 'aria-label': opts.title || 'กรอกข้อความ' },
+          h('h3', null, opts.title || 'กรอกข้อความ'),
+          opts.message ? h('p', { class: 'cmsg' }, opts.message) : null,
+          h('label', { class: 'field' }, h('span', null, opts.label || 'ข้อความ'), input),
+          opts.suggestions && opts.suggestions.length
+            ? h('div', { class: 'cash-quick' }, ...opts.suggestions.map((s) => h('button', { class: 'chip', type: 'button', onclick: () => { input.value = s; input.focus(); } }, s)))
+            : null,
+          warn,
+          h('div', { class: 'btns' }, okBtn, cancelBtn)));
+      const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } };
+      function done(value) {
+        document.removeEventListener('keydown', onKey, true);
+        overlay.remove();
+        if (previous && previous.focus) previous.focus();
+        resolve(value);
+      }
+      function submit() {
+        const text = input.value.trim();
+        if (text.length < min) {
+          warn.textContent = opts.requiredText || 'ต้องกรอกข้อความนี้ก่อน';
+          warn.hidden = false;
+          input.focus();
+          return;
+        }
+        done(text);
+      }
+      okBtn.addEventListener('click', submit);
+      cancelBtn.addEventListener('click', () => done(null));
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
+      document.addEventListener('keydown', onKey, true);
+      document.body.append(overlay);
+      input.focus();
+    });
+  }
+
   let toastTimer;
   function toast(message) {
     let el = $('#toast');
@@ -504,5 +552,5 @@
   }
   setupInstall();
 
-  window.PM = { $, h, baht, api, upload, productPic, icon, alertBeep, isPhone, inkOn, menuLevel, menuCount, menuTile, menuCrumbs, qrCard, confirm: confirmBox, toast, listen, Voice, keepAwake };
+  window.PM = { $, h, baht, api, upload, productPic, icon, alertBeep, isPhone, inkOn, menuLevel, menuCount, menuTile, menuCrumbs, qrCard, confirm: confirmBox, askText, toast, listen, Voice, keepAwake };
 })();

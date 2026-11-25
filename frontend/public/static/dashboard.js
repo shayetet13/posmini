@@ -233,7 +233,11 @@
       h('div', { class: 'brow' }, h('div', null, h('b', null, 'ยกเลิกหลังชำระเงินแล้ว'), h('div', { class: 'muted' }, 'ไม่นับในยอดขาย ตรวจว่าคืนเงินแล้วหรือยัง')),
         h('b', { class: 'num' + (a.orders ? ' warn' : '') }, a.orders + ' ออเดอร์ · ' + baht(a.revenue))),
       h('div', { class: 'brow' }, h('div', null, h('b', null, 'ยกเลิกก่อนชำระเงิน'), h('div', { class: 'muted' }, 'ยังไม่ได้รับเงิน')),
-        h('b', { class: 'num' }, u.orders + ' ออเดอร์')));
+        h('b', { class: 'num' }, u.orders + ' ออเดอร์')),
+      ...(d.cancelled.reasons || []).map((r) => h('div', { class: 'brow' }, h('div', null, h('b', null, 'เหตุผล: ' + r.reason)),
+        h('b', { class: 'num' }, r.orders + ' ออเดอร์ · ' + baht(r.revenue)))),
+      d.totals.discounts ? h('div', { class: 'brow' }, h('div', null, h('b', null, 'ส่วนลดที่ให้ลูกค้า'), h('div', { class: 'muted' }, 'หักออกจากยอดขายแล้ว')),
+        h('b', { class: 'num' }, baht(d.totals.discounts))) : null);
   }
 
   // ---- slips: every PromptPay payment of the period, kept for good (who paid, bank, reference)
@@ -274,6 +278,7 @@
     confirm_manual: 'กดยืนยันรับเงินเอง', cancel_paid: 'ยกเลิกหลังชำระเงิน', cancel: 'ยกเลิกก่อนชำระเงิน',
     call_skip: 'เรียกคิวข้ามลำดับ', reset_sales: 'ล้างยอดขาย', staff_added: 'เพิ่มพนักงาน',
     staff_changed: 'แก้บัญชีพนักงาน', staff_removed: 'ลบพนักงาน',
+    discount: 'ให้ส่วนลด', sold_out: 'สลับเมนูหมด', close_day: 'ปิดยอดวัน', backup: 'โหลดสำรองข้อมูล',
   };
   const AUDIT_WARN = new Set(['confirm_manual', 'cancel_paid', 'reset_sales']);
 
@@ -306,6 +311,7 @@
     const lines = [
       ['ออเดอร์ที่ขายได้', rep.orders.toLocaleString('th-TH')],
       ['ยอดขายรวม', baht(rep.revenue_satang)],
+      ...(rep.discount_satang ? [['ส่วนลดที่ให้ (หักแล้ว)', baht(rep.discount_satang)]] : []),
       ['เงินสด (ต้องมีในลิ้นชัก)', baht(rep.cash_satang)],
       ['โอน QR พร้อมเพย์', baht(rep.qr_satang)],
       ['ตรวจยอดโดยบอท', rep.verified_payments + ' รายการ ' + baht(rep.verified_satang)],

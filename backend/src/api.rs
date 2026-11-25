@@ -94,10 +94,12 @@ pub struct PosOrderReq {
     /// Cash handed over (satang); the bill shows it and the change.
     #[serde(default)]
     cash_received_satang: Option<i64>,
+    #[serde(flatten)]
+    extras: orders::OrderExtras,
 }
 
 pub async fn pos_create_order(
-    _auth: Authed,
+    Authed(user): Authed,
     State(state): State<AppState>,
     Json(req): Json<PosOrderReq>,
 ) -> ApiResult<Json<OrderView>> {
@@ -109,9 +111,23 @@ pub async fn pos_create_order(
         "pos",
         &req.method,
         &req.items,
+        &req.extras,
         req.cash_received_satang,
     )
     .await?;
+    if let Some(discount) = &req.extras.discount {
+        let off = orders::view_by_id(&state, id).await?.discount_satang;
+        let how = match discount.kind.as_str() {
+            "percent" => format!("{}%", discount.value),
+            _ => "ระบุเป็นบาท".to_string(),
+        };
+        let detail = format!(
+            "ลดราคา ฿{} ({how}) {}",
+            format_baht(off),
+            discount.reason.trim()
+        );
+        audit::record(&state, &user, action::DISCOUNT, Some(id), detail.trim()).await;
+    }
     if req.method == "cash" {
         orders::mark_paid(&state, id, None).await?;
     } else {
@@ -128,6 +144,8 @@ pub async fn pos_create_order(
 #[derive(Deserialize)]
 pub struct SelfOrderReq {
     items: Vec<ItemReq>,
+    #[serde(default)]
+    note: String,
 }
 
 pub async fn self_order(
@@ -148,7 +166,11 @@ pub async fn self_order(
     // From the "is another QR open?" check until this customer's QR is registered, one at a time.
     let _one_qr = state.qr_lock().lock().await;
     orders::ensure_qr_free(&state, None).await?;
-    let id = orders::create_order(&state, "self", "promptpay", &req.items, None).await?;
+    let extras = orders::OrderExtras {
+        note: req.note,
+        discount: None,
+    };
+    let id = orders::create_order(&state, "self", "promptpay", &req.items, &extras, None).await?;
     if let Err(err) = orders::start_verified_payment(&state, id).await {
         // The customer is told to try again; an order with no payable QR must not linger.
         if orders::close_order(&state, id, false).await.is_err() {
@@ -320,20 +342,44 @@ pub async fn done_order(
     Ok(Json(json!({ "ok": true })))
 }
 
+#[derive(Deserialize, Default)]
+pub struct CancelReq {
+    #[serde(default)]
+    reason: String,
+}
+
+/// Cancelling an order that was paid needs a reason: the money goes back to someone.
 pub async fn cancel_order(
     Authed(user): Authed,
     State(state): State<AppState>,
     Path(id): Path<i64>,
+    body: Option<Json<CancelReq>>,
 ) -> ApiResult<Json<Value>> {
+    let reason = body.map(|Json(b)| b.reason).unwrap_or_default();
+    let reason = crate::admin::clean_text(&reason, 60)
+        .ok_or(ApiError::BadRequest("เหตุผลยาวเกิน 60 ตัวอักษร"))?;
     let (total, status) = order_facts(&state, id).await?;
-    orders::close_order(&state, id, false).await?;
     let paid = matches!(status.as_str(), "paid" | "called");
+    if paid && reason.chars().count() < 2 {
+        return Err(ApiError::BadRequest("ออเดอร์ที่ชำระแล้วต้องระบุเหตุผลที่ยกเลิก"));
+    }
+    orders::close_order(&state, id, false).await?;
+    sqlx::query("UPDATE orders SET cancel_reason = ? WHERE id = ? AND shop_id = ?")
+        .bind(&reason)
+        .bind(id)
+        .bind(state.shop.id)
+        .execute(&state.pool)
+        .await?;
     let what = if paid {
         action::CANCEL_PAID
     } else {
         action::CANCEL
     };
-    let detail = format!("ยกเลิกออเดอร์ ฿{}", format_baht(total));
+    let detail = if reason.is_empty() {
+        format!("ยกเลิกออเดอร์ ฿{}", format_baht(total))
+    } else {
+        format!("ยกเลิกออเดอร์ ฿{} เหตุผล: {reason}", format_baht(total))
+    };
     audit::record(&state, &user, what, Some(id), &detail).await;
     Ok(Json(json!({ "ok": true })))
 }
@@ -366,6 +412,9 @@ pub struct CartLine {
 #[derive(Deserialize)]
 pub struct CartReq {
     items: Vec<CartLine>,
+    /// What the cashier took off the bill; the customer's screen shows it and the net total.
+    #[serde(default)]
+    discount_satang: i64,
 }
 
 pub async fn cart(
@@ -382,8 +431,16 @@ pub async fn cart(
     if !valid {
         return Err(ApiError::BadRequest("ข้อมูลตะกร้าไม่ถูกต้อง"));
     }
-    let total: i64 = req.items.iter().map(|l| l.qty * l.price_satang).sum();
-    let cart = json!({ "items": req.items, "total_satang": total });
+    let subtotal: i64 = req.items.iter().map(|l| l.qty * l.price_satang).sum();
+    if !(0..=subtotal).contains(&req.discount_satang) {
+        return Err(ApiError::BadRequest("ข้อมูลตะกร้าไม่ถูกต้อง"));
+    }
+    let cart = json!({
+        "items": req.items,
+        "subtotal_satang": subtotal,
+        "discount_satang": req.discount_satang,
+        "total_satang": subtotal - req.discount_satang,
+    });
     state.set_cart(cart.clone());
     state.publish(Event::new("cart", cart));
     Ok(Json(json!({ "ok": true })))

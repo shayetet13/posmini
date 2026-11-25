@@ -71,6 +71,7 @@ pub async fn report(state: &AppState, day: &str) -> ApiResult<Value> {
         "cash_satang": revenue_of(&built, "cash"),
         "qr_satang": revenue_of(&built, "promptpay"),
         "items_sold": built["totals"]["items"],
+        "discount_satang": built["totals"]["discounts"],
         "top_items": built["top_items"],
         "manual_confirms": trail["counts"]["confirm_manual"].as_i64().unwrap_or(0),
         "verified_payments": verified,

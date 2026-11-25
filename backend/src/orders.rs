@@ -25,10 +25,38 @@ const MAX_QR_SECS: i64 = 600;
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const BANGKOK_OFFSET_HOURS: i64 = 7;
 
+const ITEM_NOTE_MAX_CHARS: usize = 60;
+const ORDER_NOTE_MAX_CHARS: usize = 100;
+const REASON_MAX_CHARS: usize = 60;
+/// An order never goes below one baht: the QR and the till need a real amount.
+const MIN_TOTAL_SATANG: i64 = 100;
+
 #[derive(Deserialize)]
 pub struct ItemReq {
     pub product_id: i64,
     pub qty: i64,
+    /// What the kitchen should know about this line ("no sugar").
+    #[serde(default)]
+    pub note: String,
+}
+
+/// A discount on the whole bill: `percent` takes `value` whole percent off, `amount` takes
+/// `value` satang off. The server works the figure out, the till only asks.
+#[derive(Deserialize)]
+pub struct DiscountReq {
+    pub kind: String,
+    pub value: i64,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// What a till can add to an order besides its lines.
+#[derive(Deserialize, Default)]
+pub struct OrderExtras {
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub discount: Option<DiscountReq>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -36,6 +64,28 @@ pub struct ItemView {
     pub name: String,
     pub qty: i64,
     pub unit_price_satang: i64,
+    pub note: String,
+}
+
+/// The satang a discount takes off `subtotal`, or why it is refused.
+fn discount_satang(subtotal: i64, discount: &DiscountReq) -> ApiResult<i64> {
+    let amount = match discount.kind.as_str() {
+        "percent" if (1..=99).contains(&discount.value) => subtotal * discount.value / 100,
+        "percent" => return Err(ApiError::BadRequest("ส่วนลดเปอร์เซ็นต์ต้องอยู่ระหว่าง 1-99")),
+        "amount" if discount.value >= 1 => discount.value,
+        _ => return Err(ApiError::BadRequest("ส่วนลดไม่ถูกต้อง")),
+    };
+    if amount < 1 {
+        return Err(ApiError::BadRequest("ส่วนลดน้อยเกินไป"));
+    }
+    if subtotal - amount < MIN_TOTAL_SATANG {
+        return Err(ApiError::BadRequest("ส่วนลดมากเกินไป ยอดสุทธิต้องไม่ต่ำกว่า ฿1"));
+    }
+    Ok(amount)
+}
+
+fn clean_note(value: &str, max_chars: usize, error: &'static str) -> ApiResult<String> {
+    crate::admin::clean_text(value, max_chars).ok_or(ApiError::BadRequest(error))
 }
 
 #[derive(sqlx::FromRow)]
@@ -53,6 +103,10 @@ struct OrderRow {
     pay_expires_at: Option<String>,
     cash_received_satang: Option<i64>,
     created_at: String,
+    note: String,
+    discount_satang: i64,
+    discount_reason: String,
+    cancel_reason: String,
 }
 
 #[derive(Serialize)]
@@ -64,7 +118,14 @@ pub struct OrderView {
     pub status: String,
     pub method: String,
     pub source: String,
+    /// What the customer pays, after the discount.
     pub total_satang: i64,
+    /// The lines added up, before the discount.
+    pub subtotal_satang: i64,
+    pub discount_satang: i64,
+    pub discount_reason: String,
+    pub note: String,
+    pub cancel_reason: String,
     /// Cash the customer handed over (cash orders paid at the counter).
     pub cash_received_satang: Option<i64>,
     /// Cash handed over minus the total.
@@ -83,7 +144,7 @@ pub struct OrderView {
 
 const ORDER_COLUMNS: &str = "id, token, queue_no, status, method, source, total_satang, \
                              pay_state, qr_payload, pay_note, pay_expires_at, cash_received_satang, \
-                             created_at";
+                             created_at, note, discount_satang, discount_reason, cancel_reason";
 
 fn today() -> String {
     (chrono::Utc::now() + chrono::Duration::hours(BANGKOK_OFFSET_HOURS))
@@ -109,7 +170,7 @@ fn shows_qr(pay_state: Option<&str>) -> bool {
 
 async fn build_view(state: &AppState, row: OrderRow) -> ApiResult<OrderView> {
     let items: Vec<ItemView> = sqlx::query_as(
-        "SELECT name, qty, unit_price_satang FROM order_items WHERE order_id = ? ORDER BY id",
+        "SELECT name, qty, unit_price_satang, note FROM order_items WHERE order_id = ? ORDER BY id",
     )
     .bind(row.id)
     .fetch_all(&state.pool)
@@ -153,6 +214,11 @@ async fn build_view(state: &AppState, row: OrderRow) -> ApiResult<OrderView> {
         method: row.method,
         source: row.source,
         total_satang: row.total_satang,
+        subtotal_satang: row.total_satang + row.discount_satang,
+        discount_satang: row.discount_satang,
+        discount_reason: row.discount_reason,
+        note: row.note,
+        cancel_reason: row.cancel_reason,
         cash_received_satang: row.cash_received_satang,
         change_satang,
         pay_state: row.pay_state,
@@ -213,16 +279,27 @@ pub async fn create_order(
     source: &str,
     method: &str,
     items: &[ItemReq],
+    extras: &OrderExtras,
     cash_received: Option<i64>,
 ) -> ApiResult<i64> {
     if items.is_empty() || items.len() > MAX_LINES {
         return Err(ApiError::BadRequest("จำนวนรายการไม่ถูกต้อง"));
     }
-    let mut lines: Vec<(i64, String, i64, i64)> = Vec::with_capacity(items.len());
+    let order_note = clean_note(
+        &extras.note,
+        ORDER_NOTE_MAX_CHARS,
+        "โน้ตของออเดอร์ยาวเกิน 100 ตัวอักษร",
+    )?;
+    let mut lines: Vec<(i64, String, i64, i64, String)> = Vec::with_capacity(items.len());
     for item in items {
         if !(1..=MAX_QTY).contains(&item.qty) {
             return Err(ApiError::BadRequest("จำนวนสินค้าไม่ถูกต้อง"));
         }
+        let note = clean_note(
+            &item.note,
+            ITEM_NOTE_MAX_CHARS,
+            "โน้ตของรายการยาวเกิน 60 ตัวอักษร",
+        )?;
         let product: Option<(String, i64, i64)> = sqlx::query_as(
             "SELECT name, price_satang, sold_out FROM products \
              WHERE id = ? AND shop_id = ? AND active = 1 AND is_group = 0",
@@ -235,9 +312,17 @@ pub async fn create_order(
         if sold_out == 1 {
             return Err(ApiError::Conflict(format!("“{name}” หมดแล้ว")));
         }
-        lines.push((item.product_id, name, price, item.qty));
+        lines.push((item.product_id, name, price, item.qty, note));
     }
-    let total: i64 = lines.iter().map(|(_, _, price, qty)| price * qty).sum();
+    let subtotal: i64 = lines.iter().map(|(_, _, price, qty, _)| price * qty).sum();
+    let (discount, discount_reason) = match &extras.discount {
+        Some(d) => (
+            discount_satang(subtotal, d)?,
+            clean_note(&d.reason, REASON_MAX_CHARS, "เหตุผลส่วนลดยาวเกิน 60 ตัวอักษร")?,
+        ),
+        None => (0, String::new()),
+    };
+    let total = subtotal - discount;
     let cash_received = cash_received.filter(|_| method == "cash");
     if let Some(received) = cash_received
         && !(total..=MAX_CASH_SATANG).contains(&received)
@@ -248,7 +333,8 @@ pub async fn create_order(
     let mut tx = state.pool.begin().await?;
     let order_id: i64 = sqlx::query_scalar(
         "INSERT INTO orders (shop_id, token, queue_date, status, method, source, total_satang, \
-         cash_received_satang) VALUES (?, ?, ?, 'pending_payment', ?, ?, ?, ?) RETURNING id",
+         cash_received_satang, note, discount_satang, discount_reason) \
+         VALUES (?, ?, ?, 'pending_payment', ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(state.shop.id)
     .bind(random_token())
@@ -257,18 +343,22 @@ pub async fn create_order(
     .bind(source)
     .bind(total)
     .bind(cash_received)
+    .bind(&order_note)
+    .bind(discount)
+    .bind(&discount_reason)
     .fetch_one(&mut *tx)
     .await?;
-    for (product_id, name, price, qty) in &lines {
+    for (product_id, name, price, qty, note) in &lines {
         sqlx::query(
-            "INSERT INTO order_items (order_id, product_id, name, unit_price_satang, qty) \
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO order_items (order_id, product_id, name, unit_price_satang, qty, note) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(order_id)
         .bind(product_id)
         .bind(name)
         .bind(price)
         .bind(qty)
+        .bind(note)
         .execute(&mut *tx)
         .await?;
     }

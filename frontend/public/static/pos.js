@@ -1,12 +1,15 @@
 (function () {
   const { $, h, baht, api, productPic, qrCard, toast, listen, Voice, keepAwake } = PM;
   const ALL = 'ทั้งหมด';
-  const state = { printMode: 'off', printq: null, products: [], path: [], cat: ALL, cart: new Map(), orders: [], payId: null, printReady: false, verifyActive: false, expired: new Set() };
+  const { discountOff, totals: cartTotals } = window.CartMath;
+  const state = { discount: null, orderNote: '', notes: new Map(), printMode: 'off', printq: null, products: [], path: [], cat: ALL, cart: new Map(), orders: [], payId: null, printReady: false, verifyActive: false, expired: new Set() };
   let cartTimer;
 
   const productById = (id) => state.products.find((p) => p.id === id);
   const cartLines = () => [...state.cart].map(([id, qty]) => ({ p: productById(id), qty })).filter((l) => l.p);
-  const cartTotal = () => cartLines().reduce((s, l) => s + l.p.price_satang * l.qty, 0);
+  const cartSubtotal = () => cartLines().reduce((s, l) => s + l.p.price_satang * l.qty, 0);
+  const cartMoney = () => cartTotals(cartSubtotal(), state.discount);
+  const cartTotal = () => cartMoney().total;
   PM.cartTotal = () => cartTotal();
   const cartCount = () => cartLines().reduce((s, l) => s + l.qty, 0);
 
@@ -40,7 +43,9 @@
     const lines = cartLines();
     $('#lines').replaceChildren(...(lines.length
       ? lines.map(({ p, qty }) => h('div', { class: 'row' },
-          h('span', { class: 'nm' }, p.name),
+          h('span', { class: 'nm' }, p.name,
+            h('button', { class: 'linenote' + (state.notes.get(p.id) ? ' has' : ''), type: 'button', 'aria-label': 'โน้ต ' + p.name, onclick: () => editLineNote(p) },
+              state.notes.get(p.id) ? '✎ ' + state.notes.get(p.id) : '+ โน้ต')),
           h('span', { class: 'price num' }, baht(p.price_satang * qty)),
           h('div', { class: 'stepper' },
             h('button', { class: 'qb', type: 'button', 'aria-label': 'ลด ' + p.name, onclick: () => addToCart(p.id, -1) }, '−'),
@@ -48,6 +53,7 @@
             h('button', { class: 'qb', type: 'button', 'aria-label': 'เพิ่ม ' + p.name, onclick: () => addToCart(p.id, 1) }, '+'))))
       : [h('div', { class: 'cart-empty' }, PM.icon('bag', 22), h('span', null, 'ยังไม่มีสินค้า แตะเมนูเพื่อเริ่มขาย'))]));
     $('#cart').classList.toggle('empty', !lines.length);
+    renderExtras(lines.length > 0);
     const total = baht(cartTotal());
     $('#sum').textContent = total;
     $('#barSum').textContent = total;
@@ -56,10 +62,95 @@
     $('#clear').hidden = !lines.length;
   }
 
+  // ---- notes and discount: what the cashier adds to the bill besides the items
+  async function editLineNote(p) {
+    const text = await PM.askText({ title: 'โน้ต ' + p.name, label: 'บอกครัวว่าอะไร', placeholder: 'เช่น ไม่หวาน ไม่ใส่น้ำแข็ง', value: state.notes.get(p.id) || '', max: 60, okText: 'บันทึก', suggestions: ['ไม่หวาน', 'หวานน้อย', 'ไม่ใส่น้ำแข็ง', 'ห่อกลับบ้าน'] });
+    if (text == null) return;
+    if (text) state.notes.set(p.id, text); else state.notes.delete(p.id);
+    renderCart();
+  }
+
+  async function editOrderNote() {
+    const text = await PM.askText({ title: 'โน้ตของออเดอร์', label: 'โน้ตถึงครัว', placeholder: 'เช่น รีบ ห่อแยกถุง', value: state.orderNote, max: 100, okText: 'บันทึก' });
+    if (text == null) return;
+    state.orderNote = text;
+    renderCart();
+  }
+
+  function openDiscount() {
+    const sub = cartSubtotal();
+    let kind = state.discount ? state.discount.kind : 'percent';
+    const value = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', 'aria-label': 'จำนวนส่วนลด' });
+    const reason = h('input', { type: 'text', maxlength: 60, placeholder: 'เช่น ลูกค้าประจำ โปรโมชั่น', autocomplete: 'off' });
+    const preview = h('div', { class: 'disc-preview' });
+    const warn = h('p', { class: 'warnbox', role: 'alert', hidden: true });
+    const modeBtns = { percent: h('button', { class: 'chip', type: 'button' }, 'เปอร์เซ็นต์ %'), amount: h('button', { class: 'chip', type: 'button' }, 'เป็นบาท ฿') };
+    const wanted = () => {
+      const n = Number(String(value.value).replace(/,/g, ''));
+      if (!value.value.trim() || !Number.isFinite(n) || n <= 0) return null;
+      return kind === 'percent' ? { kind, value: Math.round(n) } : { kind, value: Math.round(n * 100) };
+    };
+    function paint() {
+      for (const [k, b] of Object.entries(modeBtns)) b.classList.toggle('on', k === kind);
+      const d = wanted();
+      const off = d ? discountOff(sub, d) : 0;
+      warn.hidden = true;
+      if (!d) preview.replaceChildren(h('span', { class: 'muted' }, 'ใส่ส่วนลด หรือกด “เอาส่วนลดออก”'));
+      else if (off == null) preview.replaceChildren(h('span', { class: 'warn' }, 'ส่วนลดนี้ใช้ไม่ได้ ต้องเหลือยอดสุทธิอย่างน้อย ฿1'));
+      else preview.replaceChildren(h('span', null, 'ลด ' + baht(off) + ' เหลือจ่าย'), h('b', { class: 'num disp' }, baht(sub - off)));
+    }
+    modeBtns.percent.addEventListener('click', () => { kind = 'percent'; paint(); });
+    modeBtns.amount.addEventListener('click', () => { kind = 'amount'; paint(); });
+    value.addEventListener('input', paint);
+    const quick = h('div', { class: 'cash-quick' }, ...[5, 10, 15, 20, 50].map((p) => h('button', { class: 'chip', type: 'button', onclick: () => { kind = 'percent'; value.value = String(p); paint(); } }, p + '%')));
+    if (state.discount) {
+      value.value = String(state.discount.kind === 'percent' ? state.discount.value : state.discount.value / 100);
+      reason.value = state.discount.reason || '';
+    }
+    const close = () => { overlay.remove(); };
+    const save = h('button', { class: 'btn primary block', type: 'button' }, 'ใช้ส่วนลดนี้');
+    save.addEventListener('click', () => {
+      const d = wanted();
+      if (!d || discountOff(sub, d) == null) { warn.textContent = 'ใส่ส่วนลดที่ใช้ได้ก่อน'; warn.hidden = false; return; }
+      state.discount = { ...d, reason: reason.value.trim() };
+      close(); renderCart(); pushCart();
+    });
+    const clear = h('button', { class: 'btn block', type: 'button' }, 'เอาส่วนลดออก');
+    clear.addEventListener('click', () => { state.discount = null; close(); renderCart(); pushCart(); });
+    const overlay = h('div', { class: 'modal confirm-modal open' },
+      h('div', { class: 'sheet confirm asktext', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'ส่วนลด' },
+        h('h3', null, 'ส่วนลดท้ายบิล'),
+        h('p', { class: 'cmsg' }, 'ยอดก่อนลด ' + baht(sub)),
+        h('div', { class: 'cash-quick' }, modeBtns.percent, modeBtns.amount),
+        h('label', { class: 'field' }, h('span', null, 'จำนวนส่วนลด'), value),
+        quick,
+        h('label', { class: 'field' }, h('span', null, 'เหตุผล (ไม่บังคับ)'), reason),
+        preview, warn,
+        h('div', { class: 'btns' }, save, state.discount ? clear : null, h('button', { class: 'btn block', type: 'button', onclick: close }, 'ปิด'))));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.body.append(overlay);
+    paint();
+    value.focus();
+  }
+
+  function renderExtras(has) {
+    const box = $('#extras');
+    if (!has) { box.replaceChildren(); return; }
+    const money = cartMoney();
+    if (!money.valid) state.discount = null;
+    const d = state.discount;
+    const noteBtn = h('button', { class: 'chip small' + (state.orderNote ? ' on' : ''), type: 'button', onclick: editOrderNote }, state.orderNote ? '✎ ' + state.orderNote : '+ โน้ตออเดอร์');
+    const discBtn = h('button', { class: 'chip small' + (d ? ' on' : ''), type: 'button', onclick: openDiscount }, d ? 'ส่วนลด ' + (d.kind === 'percent' ? d.value + '%' : baht(d.value)) : '+ ส่วนลด');
+    box.replaceChildren(...[
+      h('div', { class: 'xbtns' }, discBtn, noteBtn),
+      money.discount ? h('div', { class: 'xsum' }, h('span', { class: 'muted' }, 'ยอดก่อนลด'), h('span', { class: 'num' }, baht(money.subtotal))) : null,
+      money.discount ? h('div', { class: 'xsum off' }, h('span', null, 'ส่วนลด' + (d.reason ? ' · ' + d.reason : '')), h('span', { class: 'num' }, '−' + baht(money.discount))) : null].filter(Boolean));
+  }
+
   function addToCart(id, delta) {
     if (delta > 0 && productById(id) && productById(id).sold_out) { toast('“' + productById(id).name + '” หมดแล้ว'); return; }
     const next = (state.cart.get(id) || 0) + delta;
-    if (next <= 0) state.cart.delete(id);
+    if (next <= 0) { state.cart.delete(id); state.notes.delete(id); }
     else state.cart.set(id, Math.min(next, 99));
     renderGrid();
     renderCart();
@@ -69,11 +160,14 @@
 
   function pushCart() {
     const items = cartLines().map((l) => ({ name: l.p.name, qty: l.qty, price_satang: l.p.price_satang }));
-    api('POST', '/api/cart', { items }).catch(() => {});
+    api('POST', '/api/cart', { items, discount_satang: cartMoney().discount }).catch(() => {});
   }
 
   function clearCart() {
     state.cart.clear();
+    state.notes.clear();
+    state.discount = null;
+    state.orderNote = '';
     renderGrid();
     renderCart();
     pushCart();
@@ -81,8 +175,9 @@
 
   async function pay(method, cashReceivedSatang) {
     if (!state.cart.size) { toast('ตะกร้าว่าง เลือกสินค้าก่อน'); return; }
-    const items = [...state.cart].map(([product_id, qty]) => ({ product_id, qty }));
-    const body = { method, items };
+    const items = [...state.cart].map(([product_id, qty]) => ({ product_id, qty, note: state.notes.get(product_id) || '' }));
+    const body = { method, items, note: state.orderNote };
+    if (state.discount) body.discount = state.discount;
     if (cashReceivedSatang != null) body.cash_received_satang = cashReceivedSatang;
     try {
       const order = await api('POST', '/api/orders', body);
@@ -94,6 +189,19 @@
   }
 
   const CANCEL_ASK = { title: 'ยกเลิกออเดอร์', okText: 'ยกเลิกออเดอร์', cancelText: 'ไม่ยกเลิก' };
+  const CANCEL_REASONS = ['ลูกค้าเปลี่ยนใจ', 'คีย์ผิด', 'ของหมด', 'โอนผิด / คืนเงินแล้ว'];
+
+  // An order that was paid goes back to the customer, so the reason is written down and kept.
+  async function cancelOrder(o, paid) {
+    let reason = '';
+    if (paid) {
+      reason = await PM.askText({ title: 'ยกเลิกออเดอร์ที่ชำระแล้ว', message: 'คิว ' + (o.queue_label || '') + ' · ' + baht(o.total_satang) + '\nต้องคืนเงินให้ลูกค้า และเหตุผลจะถูกบันทึกไว้', label: 'เหตุผลที่ยกเลิก', required: true, min: 2, requiredText: 'ต้องระบุเหตุผลอย่างน้อย 2 ตัวอักษร', max: 60, okText: 'ยกเลิกออเดอร์', cancelText: 'ไม่ยกเลิก', tone: 'danger', suggestions: CANCEL_REASONS });
+      if (reason == null) return;
+    } else if (!(await PM.confirm('ยกเลิกออเดอร์นี้?', CANCEL_ASK))) return;
+    try {
+      await api('POST', '/api/orders/' + o.id + '/cancel', { reason });
+    } catch (err) { toast(err.message); }
+  }
   const STATUS = {
     pending_payment: { label: 'รอชำระ', tone: 'warn', cls: 's-pending' },
     paid: { label: 'ชำระแล้ว', tone: 'ok', cls: 's-paid' },
@@ -108,7 +216,10 @@
     } catch (err) { toast(err.message); }
   }
 
-  function itemsText(o) { return o.items.map((i) => i.name + ' ×' + i.qty).join(', '); }
+  function itemsText(o) {
+    const lines = o.items.map((i) => i.name + ' ×' + i.qty + (i.note ? ' (' + i.note + ')' : '')).join(', ');
+    return o.note ? lines + ' · โน้ต: ' + o.note : lines;
+  }
 
   const SKIP_ASK = { title: 'เรียกข้ามคิว', okText: 'เรียกข้าม', cancelText: 'ไม่เรียก' };
 
@@ -138,12 +249,12 @@
   function orderCard(o) {
     const meta = STATUS[o.status] || { label: o.status, tone: '', cls: '' };
     const btn = (cls, text, fn) => h('button', { class: 'btn small ' + cls, type: 'button', onclick: fn }, text);
-    const cancel = (ask) => btn('danger', 'ยกเลิก', () => act(o.id, 'cancel', ask, CANCEL_ASK));
+    const cancel = (paid) => btn('danger', 'ยกเลิก', () => cancelOrder(o, paid));
     let main;
     let more;
     if (o.status === 'pending_payment') {
       main = [btn('primary', 'เปิด QR / ยืนยัน', () => openPay(o.id))];
-      more = [cancel('ยกเลิกออเดอร์นี้?')];
+      more = [cancel(false)];
     } else {
       main = o.status === 'called'
         ? [btn('primary', 'รับของแล้ว', () => act(o.id, 'done')), btn('', 'เรียกซ้ำ', () => callOrder(o.id))]
@@ -151,7 +262,7 @@
       more = state.printReady
         ? [btn('', 'พิมพ์บิล', () => printOrder(o.id, 'ticket')), btn('', 'พิมพ์ใบออเดอร์', () => printOrder(o.id, 'slip'))]
         : [btn('', 'ใบเสร็จ', () => window.open('/q/' + o.token + '?print=1', '_blank'))];
-      more.push(cancel('ยกเลิกออเดอร์ที่ชำระแล้ว?'));
+      more.push(cancel(true));
     }
     // Tapping the queue number or the items opens the whole order in a big box (no printer needed).
     const open = { role: 'button', tabindex: '0', 'aria-label': 'ดูออเดอร์ ' + (o.queue_label || ''), onclick: () => openOrderView(o.id),
@@ -197,10 +308,13 @@
           h('b', { class: 'ob-q num' }, o.queue_label || '—'),
           h('span', { class: 'badge ' + meta.tone }, meta.label)),
         h('div', { class: 'ob-no muted num' }, 'ออเดอร์ #' + o.id + ' · ' + how),
-        h('div', { class: 'ob-items' }, ...o.items.map((i) => h('div', { class: 'ob-line' },
+        h('div', { class: 'ob-items' }, ...o.items.flatMap((i) => [h('div', { class: 'ob-line' },
           h('span', { class: 'ob-qty num' }, i.qty + ' ×'),
           h('span', { class: 'ob-name' }, i.name),
-          h('span', { class: 'ob-price num' }, baht(i.unit_price_satang * i.qty))))),
+          h('span', { class: 'ob-price num' }, baht(i.unit_price_satang * i.qty))),
+          i.note ? h('div', { class: 'ob-note' }, '✎ ' + i.note) : null])),
+        o.note ? h('div', { class: 'ob-note big' }, 'โน้ต: ' + o.note) : null,
+        o.discount_satang ? h('div', { class: 'ob-disc' }, h('span', null, 'ส่วนลด' + (o.discount_reason ? ' · ' + o.discount_reason : '')), h('b', { class: 'num' }, '−' + baht(o.discount_satang))) : null,
         h('div', { class: 'ob-total' }, h('span', null, 'รวม'), h('b', { class: 'num' }, baht(o.total_satang))),
         h('div', { class: 'btns' }, ...actions, h('button', { class: 'btn lg block', type: 'button', onclick: closeOrderView }, 'ปิด'))));
     orderView.addEventListener('click', (e) => { if (e.target === orderView) closeOrderView(); });
@@ -367,7 +481,7 @@
       h('div', { class: 'btns' },
         h('button', { class: 'btn ok block', type: 'button', onclick: () => act(o.id, 'confirm', 'ยืนยันว่าได้รับเงิน ' + baht(o.total_satang) + ' แล้ว?', { title: 'ยืนยันรับเงิน', okText: 'ได้รับเงินแล้ว', cancelText: 'ยังไม่ได้รับ', tone: 'primary' }) }, 'ยืนยันรับเงินแล้ว'),
         h('button', { class: 'btn block', type: 'button', onclick: closePay }, o.pay_state === 'pending' ? 'ปิด แล้วขายคิวอื่นต่อ' : 'ปิดหน้านี้'),
-        h('button', { class: 'btn danger block', type: 'button', onclick: () => act(o.id, 'cancel', 'ยกเลิกออเดอร์นี้?', CANCEL_ASK) }, 'ยกเลิกออเดอร์')));
+        h('button', { class: 'btn danger block', type: 'button', onclick: () => cancelOrder(o, false) }, 'ยกเลิกออเดอร์')));
   }
 
   // ---- payment success page (PromptPay): shown when the money is verified or confirmed by hand

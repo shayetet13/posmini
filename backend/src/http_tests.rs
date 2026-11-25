@@ -1313,7 +1313,16 @@ async fn manual_confirms_and_cancellations_are_recorded_with_who_did_them() {
     assert_eq!(act(ids[1], "confirm").await.status, StatusCode::OK);
     // One order cancelled before it was paid, one after.
     assert_eq!(act(ids[2], "cancel").await.status, StatusCode::OK);
-    assert_eq!(act(ids[1], "cancel").await.status, StatusCode::OK);
+    assert_eq!(
+        cashier
+            .post(
+                &format!("/api/orders/{}/cancel", ids[1]),
+                json!({ "reason": "ลูกค้าโอนผิด" })
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
     // Confirming an order that is already paid is not a second record.
     act(ids[0], "confirm").await;
 
@@ -1815,4 +1824,235 @@ async fn a_sold_out_item_cannot_be_ordered_until_it_is_back() {
         .json()["audit"]
         .clone();
     assert_eq!(audit["counts"]["sold_out"], 2);
+}
+
+// ----------------------------------------------- notes, discounts, cancel reasons
+
+async fn priced_product(admin: &Client, price_satang: i64) -> i64 {
+    let made = admin
+        .post(
+            "/api/products",
+            json!({ "name": "ชาเย็น", "category": "", "price_satang": price_satang }),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.text());
+    made.json()["id"].as_i64().unwrap()
+}
+
+#[tokio::test]
+async fn notes_travel_with_the_order_and_are_kept_short() {
+    let (admin, cashier) = admin_and_cashier("notes").await;
+    let product = priced_product(&admin, 5_000).await;
+
+    let order = cashier
+        .post(
+            "/api/orders",
+            json!({
+                "method": "cash",
+                "note": "ห่อกลับบ้าน",
+                "items": [{ "product_id": product, "qty": 2, "note": "ไม่หวาน" }],
+            }),
+        )
+        .await;
+    assert_eq!(order.status, StatusCode::OK, "{}", order.text());
+    let order = order.json();
+    assert_eq!(order["note"], "ห่อกลับบ้าน");
+    assert_eq!(order["items"][0]["note"], "ไม่หวาน");
+    assert_eq!(order["total_satang"], 10_000);
+
+    let too_long = "ก".repeat(61);
+    let long_line = cashier
+        .post(
+            "/api/orders",
+            json!({ "method": "cash", "items": [{ "product_id": product, "qty": 1, "note": too_long }] }),
+        )
+        .await;
+    assert_eq!(long_line.status, StatusCode::BAD_REQUEST);
+    let long_order = cashier
+        .post(
+            "/api/orders",
+            json!({ "method": "cash", "note": "ก".repeat(101), "items": [{ "product_id": product, "qty": 1 }] }),
+        )
+        .await;
+    assert_eq!(long_order.status, StatusCode::BAD_REQUEST);
+    // A refused order leaves nothing behind.
+    assert_eq!(
+        cashier
+            .get("/api/orders/active")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_discount_is_worked_out_by_the_server_and_has_limits() {
+    let (admin, cashier) = admin_and_cashier("discount").await;
+    let product = priced_product(&admin, 10_000).await;
+    let sell = |discount: Value, received: Option<i64>| {
+        let mut body = json!({
+            "method": "cash",
+            "items": [{ "product_id": product, "qty": 2 }],
+            "discount": discount,
+        });
+        if let Some(r) = received {
+            body["cash_received_satang"] = json!(r);
+        }
+        cashier.post("/api/orders", body)
+    };
+
+    // 10 percent of 200 baht.
+    let tenth = sell(
+        json!({ "kind": "percent", "value": 10, "reason": "ลูกค้าประจำ" }),
+        Some(20_000),
+    )
+    .await;
+    assert_eq!(tenth.status, StatusCode::OK, "{}", tenth.text());
+    let tenth = tenth.json();
+    assert_eq!(
+        (
+            tenth["subtotal_satang"].as_i64(),
+            tenth["discount_satang"].as_i64(),
+            tenth["total_satang"].as_i64(),
+            tenth["change_satang"].as_i64(),
+        ),
+        (Some(20_000), Some(2_000), Some(18_000), Some(2_000))
+    );
+    assert_eq!(tenth["discount_reason"], "ลูกค้าประจำ");
+
+    // A fixed amount.
+    let fixed = sell(json!({ "kind": "amount", "value": 500 }), None)
+        .await
+        .json();
+    assert_eq!(fixed["total_satang"], 19_500);
+
+    for bad in [
+        json!({ "kind": "percent", "value": 0 }),
+        json!({ "kind": "percent", "value": 100 }),
+        json!({ "kind": "amount", "value": 0 }),
+        json!({ "kind": "amount", "value": -5 }),
+        json!({ "kind": "amount", "value": 20_000 }),
+        json!({ "kind": "amount", "value": 19_950 }),
+        json!({ "kind": "free", "value": 5 }),
+    ] {
+        let refused = sell(bad.clone(), None).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    // 99 baht 99 satang worth of discount is allowed only while a baht is left to pay.
+    assert_eq!(
+        sell(json!({ "kind": "amount", "value": 19_900 }), None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    // The record says who gave it and how much.
+    let audit = admin
+        .get(&format!(
+            "/api/dashboard?period=day&date={}",
+            today_bangkok()
+        ))
+        .await
+        .json()["audit"]
+        .clone();
+    assert_eq!(audit["counts"]["discount"], 3);
+    assert!(audit["rows"].to_string().contains("ลูกค้าประจำ"));
+}
+
+#[tokio::test]
+async fn a_discounted_order_is_charged_and_printed_at_the_reduced_price() {
+    let (admin, cashier) = admin_and_cashier("discount-bill").await;
+    let product = priced_product(&admin, 10_000).await;
+    let order = cashier
+        .post(
+            "/api/orders",
+            json!({
+                "method": "cash",
+                "items": [{ "product_id": product, "qty": 1, "note": "ไม่ใส่น้ำแข็ง" }],
+                "discount": { "kind": "percent", "value": 20, "reason": "พนักงาน" },
+            }),
+        )
+        .await
+        .json();
+    assert_eq!(order["total_satang"], 8_000);
+
+    let sales = admin
+        .get(&format!(
+            "/api/dashboard?period=day&date={}",
+            today_bangkok()
+        ))
+        .await
+        .json();
+    assert_eq!(sales["totals"]["revenue"], 8_000);
+    assert_eq!(sales["totals"]["discounts"], 2_000);
+}
+
+#[tokio::test]
+async fn cancelling_a_paid_order_needs_a_reason_and_the_reason_is_recorded() {
+    let (admin, cashier) = admin_and_cashier("cancel-reason").await;
+    let product = priced_product(&admin, 5_000).await;
+    let paid = cashier.cash_order(product, None).await.json()["id"]
+        .as_i64()
+        .unwrap();
+
+    let without = cashier
+        .post(&format!("/api/orders/{paid}/cancel"), json!({}))
+        .await;
+    assert_eq!(
+        without.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        without.text()
+    );
+    let tiny = cashier
+        .post(
+            &format!("/api/orders/{paid}/cancel"),
+            json!({ "reason": "ก" }),
+        )
+        .await;
+    assert_eq!(tiny.status, StatusCode::BAD_REQUEST);
+    let still: Value = cashier.get("/api/orders/active").await.json();
+    assert_eq!(
+        still.as_array().unwrap().len(),
+        1,
+        "a refused cancel changes nothing"
+    );
+
+    let done = cashier
+        .post(
+            &format!("/api/orders/{paid}/cancel"),
+            json!({ "reason": "ลูกค้าเปลี่ยนใจ" }),
+        )
+        .await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.text());
+
+    // An order nobody paid yet can still be dropped without a reason.
+    let unpaid = cashier
+        .post(
+            "/api/orders",
+            json!({ "method": "promptpay", "items": [{ "product_id": product, "qty": 1 }] }),
+        )
+        .await
+        .json()["id"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(
+        order_action(&cashier, unpaid, "cancel").await.status,
+        StatusCode::OK
+    );
+
+    let audit = admin
+        .get(&format!(
+            "/api/dashboard?period=day&date={}",
+            today_bangkok()
+        ))
+        .await
+        .json();
+    assert!(audit["audit"]["rows"].to_string().contains("ลูกค้าเปลี่ยนใจ"));
+    let reasons = &audit["cancelled"]["reasons"];
+    assert_eq!(reasons[0]["reason"], "ลูกค้าเปลี่ยนใจ");
+    assert_eq!(reasons[0]["orders"], 1);
 }

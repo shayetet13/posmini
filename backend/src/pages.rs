@@ -86,6 +86,10 @@ pub async fn asset(Path(name): Path<String>) -> Response {
             JS,
         ),
         "calc.js" => (include_bytes!("../../frontend/public/static/calc.js"), JS),
+        "cartmath.js" => (
+            include_bytes!("../../frontend/public/static/cartmath.js"),
+            JS,
+        ),
         "pos.js" => (include_bytes!("../../frontend/public/static/pos.js"), JS),
         "dashboard.js" => (
             include_bytes!("../../frontend/public/static/dashboard.js"),

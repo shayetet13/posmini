@@ -27,6 +27,7 @@
         ...cart.items.map((i) => h('div', { class: 'row' },
           h('span', { class: 'nm' }, i.name + ' ×' + i.qty),
           h('span', { class: 'num' }, baht(i.qty * i.price_satang))))),
+      cart.discount_satang ? h('div', { class: 'mid muted' }, 'ส่วนลด −' + baht(cart.discount_satang)) : null,
       h('div', { class: 'mid muted' }, 'รวมทั้งหมด'),
       h('div', { class: 'total-chip num' }, baht(cart.total_satang)));
   }

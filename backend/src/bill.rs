@@ -298,8 +298,24 @@ pub fn ticket(bill: &BillSettings, facts: &Facts, order: &OrderView) -> Doc {
             &format_baht(item.unit_price_satang * item.qty),
             false,
         ));
+        if !item.note.is_empty() {
+            doc.push(plain(&format!("  - {}", item.note)));
+        }
     }
     doc.push(Line::Rule);
+    if order.discount_satang > 0 {
+        doc.push(row("ยอดก่อนลด", &format_baht(order.subtotal_satang), false));
+        let label = if order.discount_reason.is_empty() {
+            "ส่วนลด".to_string()
+        } else {
+            format!("ส่วนลด ({})", order.discount_reason)
+        };
+        doc.push(row(
+            &label,
+            &format!("-{}", format_baht(order.discount_satang)),
+            false,
+        ));
+    }
     doc.push(row("รวม", &format_baht(order.total_satang), true));
     match (order.method.as_str(), order.cash_received_satang) {
         ("cash", Some(received)) => {
@@ -336,6 +352,23 @@ pub fn order_slip(bill: &BillSettings, facts: &Facts, order: &OrderView) -> Doc 
             true,
             Align::Left,
         ));
+        if !item.note.is_empty() {
+            doc.push(text(
+                &format!("   * {}", item.note),
+                Size::Large,
+                false,
+                Align::Left,
+            ));
+        }
+    }
+    if !order.note.is_empty() {
+        doc.push(Line::Rule);
+        doc.push(text(
+            &format!("โน้ต: {}", order.note),
+            Size::Large,
+            true,
+            Align::Left,
+        ));
     }
     doc.push(Line::Rule);
     let source = if order.source == "self" {
@@ -356,6 +389,7 @@ pub fn sample_order(bill: &BillSettings) -> OrderView {
         name: name.to_string(),
         qty,
         unit_price_satang: price,
+        note: String::new(),
     };
     OrderView {
         id: 17,
@@ -368,6 +402,11 @@ pub fn sample_order(bill: &BillSettings) -> OrderView {
         change_satang: Some(7_500),
         source: "pos".to_string(),
         total_satang: 12_500,
+        subtotal_satang: 12_500,
+        discount_satang: 0,
+        discount_reason: String::new(),
+        note: String::new(),
+        cancel_reason: String::new(),
         pay_state: None,
         pay_note: None,
         qr_svg: None,
@@ -401,6 +440,49 @@ mod tests {
                 Line::Rule => "-".to_string(),
             })
             .collect()
+    }
+
+    #[test]
+    fn a_discount_and_notes_show_on_the_bill_and_the_kitchen_slip() {
+        let bill = BillSettings::default();
+        let mut order = sample_order(&bill);
+        order.items[0].note = "ไม่หวาน".into();
+        order.note = "ห่อแยกถุง".into();
+        order.subtotal_satang = 12_500;
+        order.discount_satang = 1_250;
+        order.discount_reason = "ลูกค้าประจำ".into();
+        order.total_satang = 11_250;
+
+        let ticket = texts(&ticket(&bill, &facts(), &order));
+        assert!(ticket.contains(&"  - ไม่หวาน".to_string()), "{ticket:?}");
+        assert!(
+            ticket.contains(&"ยอดก่อนลด|125.00".to_string()),
+            "{ticket:?}"
+        );
+        assert!(
+            ticket.contains(&"ส่วนลด (ลูกค้าประจำ)|-12.50".to_string()),
+            "{ticket:?}"
+        );
+        assert!(ticket.contains(&"รวม|112.50".to_string()), "{ticket:?}");
+
+        let slip = texts(&order_slip(&bill, &facts(), &order));
+        assert!(slip.contains(&"   * ไม่หวาน".to_string()), "{slip:?}");
+        assert!(slip.contains(&"โน้ต: ห่อแยกถุง".to_string()), "{slip:?}");
+        assert!(
+            !slip.iter().any(|l| l.contains("ส่วนลด")),
+            "the kitchen does not need to see the discount"
+        );
+    }
+
+    #[test]
+    fn a_plain_bill_has_no_discount_rows() {
+        let bill = BillSettings::default();
+        let ticket = texts(&ticket(&bill, &facts(), &sample_order(&bill)));
+        assert!(
+            !ticket
+                .iter()
+                .any(|l| l.contains("ส่วนลด") || l.contains("ก่อนลด"))
+        );
     }
 
     #[test]

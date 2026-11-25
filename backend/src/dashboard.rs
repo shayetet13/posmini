@@ -341,6 +341,28 @@ pub async fn build(
     .fetch_one(pool)
     .await?;
 
+    let sold_discounts_sql = format!(
+        "SELECT COALESCE(SUM(discount_satang), 0) FROM orders          WHERE shop_id = ? AND status IN {SOLD} AND paid_at >= ? AND paid_at < ?"
+    );
+    let discounts: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sold_discounts_sql))
+        .bind(shop_id)
+        .bind(&from)
+        .bind(&to)
+        .fetch_one(pool)
+        .await?;
+    let reasons: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT cancel_reason, COUNT(*), COALESCE(SUM(total_satang), 0) FROM orders          WHERE shop_id = ? AND status = 'cancelled' AND cancel_reason <> ''          AND COALESCE(paid_at, created_at) >= ? AND COALESCE(paid_at, created_at) < ?          GROUP BY cancel_reason ORDER BY COUNT(*) DESC, cancel_reason LIMIT 10",
+    )
+    .bind(shop_id)
+    .bind(&from)
+    .bind(&to)
+    .fetch_all(pool)
+    .await?;
+    let reasons: Vec<Value> = reasons
+        .into_iter()
+        .map(|(reason, orders, revenue)| json!({ "reason": reason, "orders": orders, "revenue": revenue }))
+        .collect();
+
     let average = if now.orders > 0 {
         now.revenue / now.orders
     } else {
@@ -350,7 +372,7 @@ pub async fn build(
         "period": match range.period { Period::Day => "day", Period::Month => "month", Period::Year => "year" },
         "from": range.start.to_string(),
         "to": (range.end - Duration::days(1)).to_string(),
-        "totals": { "orders": now.orders, "revenue": now.revenue, "average": average, "items": items_sold },
+        "totals": { "orders": now.orders, "revenue": now.revenue, "average": average, "items": items_sold, "discounts": discounts },
         "previous": {
             "orders": before.orders,
             "revenue": before.revenue,
@@ -367,6 +389,7 @@ pub async fn build(
         "cancelled": {
             "after_payment": { "orders": cancelled_after, "revenue": cancelled_after_sum },
             "unpaid": { "orders": cancelled_unpaid, "revenue": cancelled_unpaid_sum },
+            "reasons": reasons,
         },
     }))
 }
