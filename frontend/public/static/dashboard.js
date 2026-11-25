@@ -6,11 +6,12 @@
   const PREVIOUS = { day: 'วันก่อนหน้า', month: 'เดือนก่อนหน้า', year: 'ปีก่อนหน้า' };
   const TREND_TITLE = { day: 'ยอดขายรายชั่วโมง', month: 'ยอดขายรายวัน', year: 'ยอดขายรายเดือน' };
   const SOURCES = { pos: 'หน้าร้าน (แคชเชียร์)', self: 'ลูกค้าสั่งเอง (สแกน QR)' };
+  const SLIPS_PER_PAGE = 10;
   const BANKS = { kbank: 'กสิกรไทย (KBank)', scb: 'ไทยพาณิชย์ (SCB)', ktb: 'กรุงไทย (KTB)', manual: 'พนักงานกดยืนยันเอง' };
   const REFRESH_DEBOUNCE_MS = 800;
 
   const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
-  const state = { period: 'day', date: today(), data: null, error: null, seq: 0, closes: [] };
+  const state = { period: 'day', date: today(), data: null, error: null, seq: 0, closes: [], slipPage: 0 };
   let refreshTimer;
 
   // ---- dates: `state.date` is always a full YYYY-MM-DD; the API gets the part the period needs
@@ -80,6 +81,7 @@
 
   function go(change) {
     Object.assign(state, change);
+    state.slipPage = 0;
     state.data = null;
     render();
     load();
@@ -299,14 +301,28 @@
       items ? h('div', { class: 'slip-items' }, items) : null);
   }
 
+  // The server sends the slips newest first; the card shows them SLIPS_PER_PAGE at a time.
   function slipsCard(d) {
     const list = d.slips || [];
     const total = list.reduce((sum, s) => sum + s.amount_satang, 0);
-    return h('section', { class: 'card' },
+    const pages = Math.max(1, Math.ceil(list.length / SLIPS_PER_PAGE));
+    state.slipPage = Math.min(Math.max(state.slipPage, 0), pages - 1);
+    const from = state.slipPage * SLIPS_PER_PAGE;
+    const turn = (page) => {
+      state.slipPage = page;
+      const old = $('#slipscard');
+      if (old) old.replaceWith(slipsCard(d));
+    };
+    const pager = pages > 1 ? h('nav', { class: 'pager', 'aria-label': 'เปลี่ยนหน้าสลิป' },
+      h('button', { class: 'btn small', type: 'button', disabled: state.slipPage === 0, onclick: () => turn(state.slipPage - 1) }, '‹ ใหม่กว่า'),
+      h('span', { class: 'muted num' }, 'หน้า ' + (state.slipPage + 1) + ' / ' + pages + ' · รายการที่ ' + (from + 1) + '–' + Math.min(from + SLIPS_PER_PAGE, list.length)),
+      h('button', { class: 'btn small', type: 'button', disabled: state.slipPage >= pages - 1, onclick: () => turn(state.slipPage + 1) }, 'เก่ากว่า ›')) : null;
+    return h('section', { class: 'card', id: 'slipscard' },
       h('div', { class: 'cardhead' }, h('h2', null, 'สลิปการโอนเงิน (พร้อมเพย์)'),
         h('span', { class: 'muted' }, list.length ? list.length.toLocaleString('th-TH') + ' รายการ · ' + baht(total) : '')),
       h('p', { class: 'muted note' }, 'บันทึกทุกครั้งที่ระบบตรวจยอดเงินเข้าสำเร็จ เก็บถาวร ย้อนดูวันอื่นได้ด้วยตัวเลือกวันที่ด้านบน แม้กดล้างยอดขายแล้วก็ยังอยู่'),
-      list.length ? h('ul', { class: 'slips' }, ...list.map(slipRow)) : h('p', { class: 'muted empty' }, 'ยังไม่มีสลิปในช่วงนี้'),
+      list.length ? h('ul', { class: 'slips' }, ...list.slice(from, from + SLIPS_PER_PAGE).map(slipRow)) : h('p', { class: 'muted empty' }, 'ยังไม่มีสลิปในช่วงนี้'),
+      pager,
       list.length >= 500 ? h('p', { class: 'muted note' }, 'แสดง 500 รายการล่าสุดของช่วงนี้ เลือกช่วงที่สั้นลงเพื่อดูรายการเก่ากว่า') : null);
   }
 

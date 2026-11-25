@@ -743,3 +743,6 @@ a.btn,a.pill{text-decoration:none;color:inherit}
 .slip.tap:hover,.slip.tap:focus-visible{border-color:var(--jade);background:var(--paper);outline:0}
 .slip.tap:active{transform:scale(.995)}
 .slip-v{text-align:right;overflow-wrap:anywhere}
+
+.pager{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;flex-wrap:wrap}
+.pager .btn[disabled]{opacity:.4;cursor:default}
