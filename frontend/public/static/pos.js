@@ -185,6 +185,9 @@
     const body = { method, items, note: state.orderNote };
     if (state.discount) body.discount = state.discount;
     if (cashReceivedSatang != null) body.cash_received_satang = cashReceivedSatang;
+    // The id exists before the first try: if the server saves the sale but the answer is lost, the
+    // queued copy carries the same id and the server recognises it instead of selling twice.
+    if (method === 'cash') body.client_id = OfflineQ.newId();
     const total = cartTotal();
     try {
       const order = await api('POST', '/api/orders', body);

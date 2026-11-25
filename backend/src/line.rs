@@ -218,6 +218,14 @@ pub async fn link(
     Json(req): Json<LinkReq>,
 ) -> ApiResult<Json<Value>> {
     crate::api::check_token(&token)?;
+    // Unknown tokens are refused before anything is counted, so junk cannot fill the limiter.
+    let known: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM orders WHERE shop_id = ? AND token = ?")
+            .bind(state.shop.id)
+            .bind(&token)
+            .fetch_optional(&state.pool)
+            .await?;
+    known.ok_or(ApiError::NotFound)?;
     let key = format!("line-link:{token}");
     if state.is_limited(&key, LINK_MAX, LINK_WINDOW) {
         return Err(ApiError::TooMany);

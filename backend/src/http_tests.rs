@@ -2408,3 +2408,14 @@ async fn an_offline_sale_with_a_bad_id_or_price_problem_is_refused_clearly() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn linking_line_for_an_unknown_order_is_not_found() {
+    let (admin, _cashier) = admin_and_cashier("line-unknown").await;
+    let customer = admin.another_session();
+    let path = format!("/api/q/{}/line", "a".repeat(64));
+    let reply = customer
+        .post(&path, json!({ "id_token": "good-token" }))
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
