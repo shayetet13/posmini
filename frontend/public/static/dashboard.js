@@ -11,7 +11,7 @@
   const REFRESH_DEBOUNCE_MS = 800;
 
   const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date());
-  const state = { period: 'day', date: today(), data: null, error: null, seq: 0, closes: [], slipPage: 0, slipFilter: 'all' };
+  const state = { period: 'day', date: today(), data: null, error: null, seq: 0, closes: [], slips: null, slipSeq: 0, slipPage: 0, slipFilter: 'all' };
   let refreshTimer;
 
   // ---- dates: `state.date` is always a full YYYY-MM-DD; the API gets the part the period needs
@@ -63,8 +63,32 @@
   }
 
   // ---- data
+  // The slips card has its own request (ten rows a page, cut on the server) and its own
+  // placeholder, so the totals and charts appear without waiting for it.
+  async function loadSlips() {
+    const seq = ++state.slipSeq;
+    const query = '?period=' + state.period + '&date=' + keyOf(state.period, state.date) + '&method=' + state.slipFilter + '&page=' + state.slipPage;
+    try {
+      const page = await api('GET', '/api/dashboard/slips' + query);
+      if (seq !== state.slipSeq) return;
+      state.slips = page;
+      const pages = Math.max(1, Math.ceil(page.total / page.per_page));
+      if (state.slipPage > pages - 1) { state.slipPage = pages - 1; loadSlips(); return; }
+    } catch (err) {
+      if (seq !== state.slipSeq) return;
+      toast(err.message);
+    }
+    paintSlips();
+  }
+
+  function paintSlips() {
+    const old = $('#slipscard');
+    if (old) old.replaceWith(slipsCard());
+  }
+
   async function load() {
     const seq = ++state.seq;
+    loadSlips();
     try {
       const [data, closes] = await Promise.all([
         api('GET', '/api/dashboard?period=' + state.period + '&date=' + keyOf(state.period, state.date)),
@@ -86,6 +110,7 @@
     Object.assign(state, change);
     state.slipPage = 0;
     state.slipFilter = 'all';
+    state.slips = null;
     state.data = null;
     render();
     load();
@@ -314,36 +339,29 @@
       items ? h('div', { class: 'slip-items' }, items) : null);
   }
 
-  // The server sends the slips newest first; the card shows them SLIPS_PER_PAGE at a time.
-  function slipsCard(d) {
-    const all = d.slips || [];
-    const list = state.slipFilter === 'all' ? all : all.filter((s) => s.method === state.slipFilter);
-    const total = list.reduce((sum, s) => sum + s.amount_satang, 0);
-    const pages = Math.max(1, Math.ceil(list.length / SLIPS_PER_PAGE));
-    state.slipPage = Math.min(Math.max(state.slipPage, 0), pages - 1);
-    const from = state.slipPage * SLIPS_PER_PAGE;
-    const turn = (page) => {
-      state.slipPage = page;
-      const old = $('#slipscard');
-      if (old) old.replaceWith(slipsCard(d));
-    };
-    const pager = pages > 1 ? h('nav', { class: 'pager', 'aria-label': 'เปลี่ยนหน้าสลิป' },
-      h('button', { class: 'btn small', type: 'button', disabled: state.slipPage === 0, onclick: () => turn(state.slipPage - 1) }, '‹ ใหม่กว่า'),
-      h('span', { class: 'muted num' }, 'หน้า ' + (state.slipPage + 1) + ' / ' + pages + ' · รายการที่ ' + (from + 1) + '–' + Math.min(from + SLIPS_PER_PAGE, list.length)),
-      h('button', { class: 'btn small', type: 'button', disabled: state.slipPage >= pages - 1, onclick: () => turn(state.slipPage + 1) }, 'เก่ากว่า ›')) : null;
-    const filters = h('div', { class: 'chips', role: 'tablist', 'aria-label': 'กรองสลิป' }, ...SLIP_FILTERS.map(([key, text]) => {
-      const n = key === 'all' ? all.length : all.filter((s) => s.method === key).length;
-      return h('button', { class: 'chip small' + (key === state.slipFilter ? ' on' : ''), type: 'button', role: 'tab', 'aria-selected': key === state.slipFilter,
-        onclick: () => { state.slipFilter = key; state.slipPage = 0; const old = $('#slipscard'); if (old) old.replaceWith(slipsCard(d)); } }, text + ' ' + n);
-    }));
+  // One page of slips (the server sends ten, newest first) with the counts for the filter chips.
+  function slipsCard() {
+    const data = state.slips;
+    const rows = data ? data.rows : [];
+    const pages = data ? Math.max(1, Math.ceil(data.total / data.per_page)) : 1;
+    const from = data ? data.page * data.per_page : 0;
+    const go = (change) => { Object.assign(state, change); paintSlips(); loadSlips(); };
+    const pager = data && pages > 1 ? h('nav', { class: 'pager', 'aria-label': 'เปลี่ยนหน้าสลิป' },
+      h('button', { class: 'btn small', type: 'button', disabled: state.slipPage === 0, onclick: () => go({ slipPage: state.slipPage - 1 }) }, '‹ ใหม่กว่า'),
+      h('span', { class: 'muted num' }, 'หน้า ' + (state.slipPage + 1) + ' / ' + pages + ' · รายการที่ ' + (from + 1) + '–' + (from + rows.length)),
+      h('button', { class: 'btn small', type: 'button', disabled: state.slipPage >= pages - 1, onclick: () => go({ slipPage: state.slipPage + 1 }) }, 'เก่ากว่า ›')) : null;
+    const filters = h('div', { class: 'chips', role: 'tablist', 'aria-label': 'กรองสลิป' }, ...SLIP_FILTERS.map(([key, text]) =>
+      h('button', { class: 'chip small' + (key === state.slipFilter ? ' on' : ''), type: 'button', role: 'tab', 'aria-selected': key === state.slipFilter,
+        onclick: () => go({ slipFilter: key, slipPage: 0 }) }, text + (data ? ' ' + data.counts[key] : ''))));
+    let body;
+    if (!data) body = h('div', { class: 'slips' }, ...PM.skeleton.cards(3));
+    else if (rows.length) body = h('ul', { class: 'slips' }, ...rows.map(slipRow));
+    else body = h('p', { class: 'muted empty' }, 'ยังไม่มีสลิปในช่วงนี้');
     return h('section', { class: 'card', id: 'slipscard' },
       h('div', { class: 'cardhead' }, h('h2', null, 'สลิปการขาย (เงินสด และ QR พร้อมเพย์)'),
-        h('span', { class: 'muted' }, list.length ? list.length.toLocaleString('th-TH') + ' รายการ · ' + baht(total) : '')),
+        h('span', { class: 'muted' }, data && data.total ? data.total.toLocaleString('th-TH') + ' รายการ · ' + baht(data.sum_satang) : '')),
       h('p', { class: 'muted note' }, 'บันทึกทุกครั้งที่ขายสำเร็จ ทั้งเงินสดและโอน เก็บถาวร ย้อนดูวันอื่นได้ด้วยตัวเลือกวันที่ด้านบน แม้กดล้างยอดขายแล้วก็ยังอยู่'),
-      filters,
-      list.length ? h('ul', { class: 'slips' }, ...list.slice(from, from + SLIPS_PER_PAGE).map(slipRow)) : h('p', { class: 'muted empty' }, 'ยังไม่มีสลิปในช่วงนี้'),
-      pager,
-      list.length >= 500 ? h('p', { class: 'muted note' }, 'แสดง 500 รายการล่าสุดของช่วงนี้ เลือกช่วงที่สั้นลงเพื่อดูรายการเก่ากว่า') : null);
+      filters, body, pager);
   }
 
   // ---- audit: who confirmed, cancelled or changed what (the money-risky actions first)
@@ -462,11 +480,21 @@
         : h('p', { class: 'muted empty' }, 'ยังไม่เคยปิดยอด กดปุ่ม “ปิดยอดวัน” ด้านบนเมื่อจบวัน'));
   }
 
+  // The shape of the screen while its numbers are on the way.
+  function loadingView() {
+    const sk = PM.sk;
+    return [
+      h('div', { class: 'kpis', 'aria-hidden': 'true' }, ...[0, 1, 2, 3].map((i) => h('div', { class: 'kpi' + (i === 0 ? ' hero-kpi' : '') }, sk('sk-line', 'width:46%'), sk('sk-big', 'width:62%'), sk('sk-line', 'width:34%')))),
+      h('div', { class: 'dgrid', 'aria-hidden': 'true' }, h('section', { class: 'card' }, sk('sk-line', 'width:38%;height:18px'), sk('sk-block')), h('section', { class: 'card' }, sk('sk-line', 'width:44%;height:18px'), sk('sk-block'))),
+      h('section', { class: 'card', 'aria-hidden': 'true' }, sk('sk-line', 'width:40%;height:18px'), ...PM.skeleton.cards(2)),
+    ];
+  }
+
   function render() {
     renderControls();
     const view = $('#view');
     if (state.error && !state.data) { view.replaceChildren(h('p', { class: 'err' }, state.error)); return; }
-    if (!state.data) { view.replaceChildren(h('p', { class: 'muted empty' }, 'กำลังโหลด…')); return; }
+    if (!state.data) { view.replaceChildren(...loadingView()); return; }
     const d = state.data;
     view.replaceChildren(...[
       kpis(d),
@@ -475,7 +503,7 @@
         breakdown('ที่มาของออเดอร์', d.sources, SOURCES, 'source'),
         breakdown('QR แยกตามธนาคาร', d.banks, BANKS, 'bank', 'ธนาคารที่ API ตรวจพบ ส่วนพนักงานกดยืนยันเองไม่มีข้อมูลธนาคาร'),
         cancelled(d))),
-      slipsCard(d),
+      slipsCard(),
       auditCard(d),
       closesCard(),
     ]);

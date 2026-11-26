@@ -477,6 +477,7 @@
 
   // Several live events in a row (a rush) ask for one reload, plus one more if something came in
   // meanwhile, instead of a full download and redraw for each.
+  let ordersReady = false;
   let ordersLoading = false;
   let ordersAgain = false;
   async function loadOrders() {
@@ -485,7 +486,8 @@
     try {
       do {
         ordersAgain = false;
-        try { state.orders = await api('GET', '/api/orders/active'); } catch (err) { toast(err.message); return; }
+        try { state.orders = await api('GET', '/api/orders/active'); } catch (err) { toast(err.message); if (!ordersReady) renderOrders(); return; }
+        ordersReady = true;
         renderOrders();
       } while (ordersAgain);
     } finally { ordersLoading = false; }
@@ -753,7 +755,7 @@
       // No connection: sell from the menu this till saw last time.
       let saved = null;
       try { saved = JSON.parse(store.getItem(PRODUCTS_KEY) || 'null'); } catch (_) { saved = null; }
-      if (!OfflineQ.isNoConnection(err) || !Array.isArray(saved) || !saved.length) { toast(err.message); return; }
+      if (!OfflineQ.isNoConnection(err) || !Array.isArray(saved) || !saved.length) { toast(err.message); renderGrid(); return; }
       state.products = saved;
       toast('ไม่มีสัญญาณ ใช้เมนูที่จำไว้ในเครื่อง ขายเงินสดได้ตามปกติ');
     }
@@ -816,6 +818,11 @@
   async function init() {
     $('#today').textContent = new Date().toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     // Each answer takes a round trip; on a weak connection asking one by one added up to seconds.
+    // The menu this till saw last time is shown at once; the fresh one replaces it a moment later.
+    let saved = null;
+    try { saved = JSON.parse(store.getItem(PRODUCTS_KEY) || 'null'); } catch (_) { saved = null; }
+    if (Array.isArray(saved) && saved.length) { state.products = saved; renderChips(); renderGrid(); } else $('#grid').replaceChildren(...PM.skeleton.tiles(8));
+    $('#qlist').replaceChildren(...PM.skeleton.cards(3));
     const printSettings = api('GET', '/api/print/settings').catch(() => null);
     loadPrintq();
     refreshDisplays();

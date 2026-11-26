@@ -767,3 +767,16 @@ a.btn,a.pill{text-decoration:none;color:inherit}
 @keyframes tab-pop{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:none}}
 @keyframes cartbar-in{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.tab[data-tab=cart]:not([hidden]),body.has-cart .cartbar{animation:none}}
+
+/* ---- skeleton screens: grey blocks that shimmer while the data is on the way ---------------- */
+.sk{display:block;border-radius:10px;background:linear-gradient(100deg,var(--paper-2) 30%,#FBF6EC 50%,var(--paper-2) 70%);background-size:220% 100%;animation:sk-shimmer 1.3s ease-in-out infinite}
+@keyframes sk-shimmer{from{background-position:120% 0}to{background-position:-120% 0}}
+.sk-line{height:14px;margin:6px 0}
+.sk-big{height:34px;margin:8px 0;border-radius:12px}
+.sk-block{height:180px;margin-top:12px;border-radius:16px}
+.sk-pic{width:76px;height:76px;border-radius:12px;flex:none}
+.tile.sk-tile{pointer-events:none;box-shadow:none;border-color:var(--line-2)}
+.tile.sk-tile:hover{transform:none;box-shadow:none}
+.sk-card{display:grid;gap:6px;padding:14px;pointer-events:none}
+.card.sk-card{margin-top:0}
+@media (prefers-reduced-motion:reduce){.sk{animation:none}}

@@ -307,6 +307,18 @@
     });
   }
 
+  // Grey shimmering blocks that hold a screen's place while its data is on the way, so the page
+  // has its shape at once instead of showing "loading".
+  const sk = (cls, style) => h('span', { class: 'sk ' + (cls || ''), style: style || null, 'aria-hidden': 'true' });
+  const skeleton = {
+    tiles: (n) => Array.from({ length: n }, () => h('div', { class: 'tile sk-tile', 'aria-hidden': 'true' },
+      sk('sk-pic'), h('div', { class: 'tbody' }, sk('sk-line', 'width:72%'), sk('sk-line', 'width:38%')))),
+    cards: (n) => Array.from({ length: n }, () => h('div', { class: 'qcard sk-card', 'aria-hidden': 'true' },
+      sk('sk-line', 'width:42%;height:22px'), sk('sk-line', 'width:88%'), sk('sk-line', 'width:64%'))),
+    lines: (n) => [h('div', { class: 'card sk-card', 'aria-hidden': 'true' },
+      ...Array.from({ length: n }, (_, i) => sk('sk-line', 'width:' + (88 - ((i * 17) % 40)) + '%')))],
+  };
+
   let toastTimer;
   // A small card that drops in from the top. The first line is the headline; a line after a
   // newline is the quieter explanation under it.
@@ -544,7 +556,10 @@
 
   function setupInstall() {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => { /* needs https; fine without */ });
+      // After the page has finished loading and settled: installing the saved copies must not
+      // compete with the page's own first requests on a weak connection.
+      const register = () => setTimeout(() => navigator.serviceWorker.register('/sw.js').catch(() => { /* needs https; fine without */ }), 2000);
+      if (document.readyState === 'complete') register(); else window.addEventListener('load', register, { once: true });
       navigator.serviceWorker.addEventListener('message', (e) => {
         if (e.data && e.data.type === 'updated') toast('มีเวอร์ชันใหม่แล้ว\nรีเฟรชหน้านี้ (หรือเปิดใหม่) เพื่อใช้เวอร์ชันล่าสุด');
       });
@@ -567,5 +582,5 @@
   }
   setupInstall();
 
-  window.PM = { $, h, baht, api, upload, productPic, icon, alertBeep, isPhone, inkOn, menuLevel, menuCount, menuTile, menuCrumbs, qrCard, confirm: confirmBox, askText, toast, listen, Voice, keepAwake };
+  window.PM = { $, h, baht, api, upload, productPic, icon, alertBeep, isPhone, inkOn, menuLevel, menuCount, menuTile, menuCrumbs, qrCard, sk, skeleton, confirm: confirmBox, askText, toast, listen, Voice, keepAwake };
 })();

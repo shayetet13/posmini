@@ -44,13 +44,16 @@ const network = {
   online: true,
   hits: [],
   version: 1,
+  date: null, // when set, sent as the Date header (how old the copy is)
   hang: null,
   async fetch(request) {
     const url = new URL(urlOf(request));
     this.hits.push(url.pathname);
     if (!this.online) throw new TypeError('Failed to fetch');
     if (this.hang) await this.hang;
-    return new Response('body of ' + url.pathname + ' v' + this.version, { status: 200, headers: { etag: 'v' + this.version } });
+    const headers = { etag: 'v' + this.version };
+    if (this.date) headers.date = this.date;
+    return new Response('body of ' + url.pathname + ' v' + this.version, { status: 200, headers });
   },
 };
 
@@ -64,6 +67,7 @@ function boot() {
   network.online = true;
   network.hits = [];
   network.version = 1;
+  network.date = null;
   network.hang = null;
   told.length = 0;
   waits.length = 0;
@@ -93,15 +97,16 @@ async function ask(handlers, url, { method = 'GET', mode = 'cors' } = {}) {
   return answer && (await answer);
 }
 
-test('install keeps the offline page, the screens and their scripts for later', async () => {
+test('install keeps the offline page, the till and its scripts for later (not every screen)', async () => {
   const handlers = boot();
   await lifecycle(handlers, 'install');
   assert.equal(caches.stores.size, 1, 'one cache, so a refreshed copy is never hidden by an older one');
   const [store] = [...caches.stores.values()];
   const kept = (await store.keys()).map((r) => new URL(r.url).pathname);
-  for (const wanted of ['/offline.html', '/pos', '/dashboard', '/settings', '/static/app.css', '/static/pos.js', '/static/common.js']) {
+  for (const wanted of ['/offline.html', '/pos', '/static/app.css', '/static/pos.js', '/static/common.js']) {
     assert.ok(kept.includes(wanted), wanted + ' missing from ' + kept.join(','));
   }
+  assert.ok(!kept.includes('/static/settings.js') && !kept.includes('/dashboard'), 'rarely used screens wait until they are opened');
 });
 
 test('activate clears caches left by an older version', async () => {
@@ -138,8 +143,8 @@ test('a saved page opens at once even when the connection is very slow', async (
   await lifecycle(handlers, 'install');
   let release;
   network.hang = new Promise((resolve) => { release = resolve; });
-  const answer = await ask(handlers, ORIGIN + '/dashboard', { mode: 'navigate' });
-  assert.equal(await answer.text(), 'body of /dashboard v1', 'did not wait for the network');
+  const answer = await ask(handlers, ORIGIN + '/pos', { mode: 'navigate' });
+  assert.equal(await answer.text(), 'body of /pos v1', 'did not wait for the network');
   release();
   await settle();
 });
@@ -177,6 +182,25 @@ test('a script is answered from the copy and refreshed behind it; the next visit
   assert.deepEqual(network.hits, ['/static/zzz.js'], 'refreshed from the network behind it');
   const second = await ask(handlers, ORIGIN + '/static/zzz.js');
   assert.equal(await second.text(), 'body of /static/zzz.js v2', 'the next visit uses the new file');
+});
+
+test('a copy saved a moment ago is used as it is, with no request behind it', async () => {
+  const handlers = boot();
+  network.date = new Date().toUTCString();
+  await ask(handlers, ORIGIN + '/static/zzz.js');
+  await settle();
+  network.hits = [];
+  const again = await ask(handlers, ORIGIN + '/static/zzz.js');
+  assert.equal(await again.text(), 'body of /static/zzz.js v1');
+  await settle();
+  assert.deepEqual(network.hits, [], 'young enough: nothing asked of the network');
+  network.date = new Date(Date.now() - 10 * 60 * 1000).toUTCString();
+  await ask(handlers, ORIGIN + '/static/old.js');
+  await settle();
+  network.hits = [];
+  await ask(handlers, ORIGIN + '/static/old.js');
+  await settle();
+  assert.deepEqual(network.hits, ['/static/old.js'], 'an old copy is refreshed behind the answer');
 });
 
 test('the open page is told when a newer version of a file arrived', async () => {

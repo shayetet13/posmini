@@ -222,8 +222,10 @@ test('a customer orders on their phone, pays by QR, is told on LINE, and the sho
   // 6. The slip records who paid and that the bot, not a person, checked it.
   const day = (await shop.call('GET', '/api/dashboard?period=day&date=' + bangkokToday())).json;
   assert.equal(day.totals.revenue, 8000);
-  assert.equal(day.slips.length, 1);
-  assert.deepEqual([day.slips[0].verified, day.slips[0].bank, day.slips[0].payer_name], [true, 'kbank', 'สมชาย ใจดี']);
+  assert.equal(day.slips, undefined, 'the slips come from their own request, a page at a time');
+  const slips = (await shop.call('GET', '/api/dashboard/slips?period=day&date=' + bangkokToday())).json;
+  assert.equal(slips.rows.length, 1);
+  assert.deepEqual([slips.rows[0].verified, slips.rows[0].bank, slips.rows[0].payer_name], [true, 'kbank', 'สมชาย ใจดี']);
   assert.equal(day.audit.counts.confirm_manual, undefined, 'no one pressed confirm by hand');
 
   // 7. The place in line is free again for the next customer.

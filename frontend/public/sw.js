@@ -10,8 +10,12 @@
 const VERSION = 'posmini-v2';
 const APP = VERSION + '-app';
 const OFFLINE_PAGE = '/offline.html';
-const PAGES = ['/pos', '/dashboard', '/settings', '/login'];
-const STATIC = ['app.css', 'common.js', 'calc.js', 'cartmath.js', 'offlineq.js', 'station.js', 'pos.js', 'dashboard.js', 'settings.js', 'icon-192.png'];
+// Only the till is saved up front. The other screens are saved the first time they are opened
+// (downloading them all at install competed with the page's own first requests).
+const PAGES = ['/pos'];
+const STATIC = ['app.css', 'common.js', 'calc.js', 'cartmath.js', 'offlineq.js', 'station.js', 'pos.js', 'icon-192.png'];
+// A saved copy younger than this is used as it is, with no request behind it.
+const FRESH_MS = 120000;
 const PRECACHE = [OFFLINE_PAGE, ...PAGES, ...STATIC.map((name) => '/static/' + name)];
 const LIVE = ['/api/', '/events/'];
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
@@ -61,8 +65,15 @@ async function tellPagesAboutUpdate() {
 
 // The saved copy now, the network copy for next time. Without a saved copy the network decides,
 // and if that fails too the offline page stands in for a screen.
-function staleWhileRevalidate(event, fallbackPage, allowOpaque) {
+function isFresh(cached) {
+  const stamp = cached && Date.parse(cached.headers.get('date') || '');
+  return Number.isFinite(stamp) && Date.now() - stamp < FRESH_MS;
+}
+
+async function staleWhileRevalidate(event, fallbackPage, allowOpaque) {
   const { request } = event;
+  const saved = await caches.match(request);
+  if (isFresh(saved)) return saved;
   const work = []; // saving the copy and the notice finish after the page already has its answer
   const refresh = fetch(request).then(async (response) => {
     const before = await caches.match(request);
@@ -73,11 +84,14 @@ function staleWhileRevalidate(event, fallbackPage, allowOpaque) {
     return response;
   });
   event.waitUntil(refresh.then(() => Promise.all(work), () => { /* offline: the saved copy is all there is */ }));
-  return caches.match(request).then((cached) => cached || refresh.catch(async (err) => {
+  if (saved) return saved;
+  try {
+    return await refresh;
+  } catch (err) {
     const page = fallbackPage && await caches.match(fallbackPage);
     if (page) return page;
     throw err;
-  }));
+  }
 }
 
 async function cacheFirst(request) {

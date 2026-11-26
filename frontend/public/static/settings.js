@@ -40,7 +40,7 @@
 
   // ------------------------------------------------------------- menu tab
 
-  async function loadProducts() { state.products = await api('GET', '/api/products'); }
+  async function loadProducts() { state.products = await api('GET', '/api/products'); state.productsReady = true; }
 
   function setSelecting(on) {
     state.selecting = on;
@@ -209,7 +209,8 @@
     const rows = treeRows(null, 0);
     return [
       menuToolbar(),
-      h('div', { class: 'card' }, ...(rows.length ? rows : [h('p', { class: 'muted', style: 'text-align:center;padding:16px 0' }, 'ยังไม่มีสินค้า กด “เพิ่มสินค้า”')])),
+      state.productsReady ? h('div', { class: 'card' }, ...(rows.length ? rows : [h('p', { class: 'muted', style: 'text-align:center;padding:16px 0' }, 'ยังไม่มีสินค้า กด “เพิ่มสินค้า”')]))
+        : PM.skeleton.lines(6)[0],
       anyPic || !rows.length || state.selecting ? null : h('p', { class: 'muted', style: 'margin-top:10px' }, 'เคล็ดลับ: ใส่รูปสินค้าได้ที่ปุ่ม “แก้ไข” รูปจะแสดงบนหน้าขายและหน้าสั่งของลูกค้า'),
       state.selecting || !rows.length ? null : h('p', { class: 'muted', style: 'margin-top:6px' }, 'จัดเป็นกลุ่มได้: กด “เพิ่มกลุ่ม” เช่น ชาไทย แล้วเพิ่มเมนูข้างใน (เย็น, หวานน้อย …) หน้าขายจะกดเปิดกลุ่มเพื่อเลือก การ์ดแต่ละใบมีสีของตัวเอง เลือกสีได้ตอนแก้ไข และสีจะไม่ซ้ำกันในกลุ่มเดียวกัน'),
     ];
@@ -444,7 +445,7 @@
 
   function renderPay() {
     const s = state.settings;
-    if (!s) return [h('p', { class: 'muted' }, 'กำลังโหลด…')];
+    if (!s) return PM.skeleton.lines(5);
     const input = (value, attrs) => h('input', { value: value || '', autocomplete: 'off', spellcheck: 'false', ...attrs });
     const ppId = input(s.promptpay_id, { inputmode: 'numeric', maxlength: 20, placeholder: '0812345678' });
     const ppHint = h('span', { class: 'muted' });
@@ -629,7 +630,7 @@
 
   function renderBill() {
     const b = state.bill;
-    if (!b) return [h('p', { class: 'muted' }, 'กำลังโหลด…')];
+    if (!b) return PM.skeleton.lines(5);
     const field = (label, el, note) => h('label', { class: 'field' }, h('span', null, label), el, note || null);
     const text = (value, max, placeholder) => h('input', { value, maxlength: max, placeholder: placeholder || '', autocomplete: 'off' });
     const area = (value, rows, max, placeholder) => { const el = h('textarea', { rows, maxlength: max, placeholder }); el.value = value; return el; };
@@ -786,7 +787,7 @@
 
   function renderPrint() {
     const p = state.print;
-    if (!p) return [h('p', { class: 'muted' }, 'กำลังโหลด…')];
+    if (!p) return PM.skeleton.lines(5);
     const targets = state.targets || { printers: [], ports: [] };
     const field = (label, el, note) => h('label', { class: 'field' }, h('span', null, label), el, note || null);
     const check = (label, value) => {
@@ -1034,7 +1035,7 @@
     // Side by side: one after another, each waited a full round trip.
     const quiet = (promise, then) => promise.then(then, (err) => toast(err.message));
     await Promise.all([
-      loadProducts().catch((err) => toast(err.message)),
+      loadProducts().catch((err) => { state.productsReady = true; toast(err.message); }),
       quiet(api('GET', '/api/settings'), (v) => { state.settings = v; }),
       quiet(api('GET', '/api/print/settings'), (v) => { state.print = v; }),
       quiet(api('GET', '/api/bill/settings'), (v) => { state.bill = v; }),

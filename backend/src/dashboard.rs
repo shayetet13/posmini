@@ -492,8 +492,11 @@ fn range_of(params: &Params) -> ApiResult<Range> {
     Range::parse(&params.period, &params.date).ok_or(ApiError::BadRequest("ช่วงเวลาไม่ถูกต้อง"))
 }
 
-/// Most slips listed for one period; a year can hold far more than anyone scrolls through.
-const SLIPS_LIMIT: i64 = 500;
+/// Slips shown per page. The page is cut here, not in the browser: a busy month holds thousands,
+/// and sending them all made the dashboard crawl on a weak connection.
+const SLIPS_PER_PAGE: i64 = 10;
+/// Furthest page a request may ask for (a guard against absurd offsets).
+const SLIPS_MAX_PAGE: i64 = 100_000;
 
 type SlipRow = (
     i64,
@@ -509,60 +512,121 @@ type SlipRow = (
     Option<i64>,
 );
 
-/// The payments of the period (cash and PromptPay), newest first: the slip (payer, bank,
-/// reference, what was bought). Kept in `payment_slips`, so past days stay available.
+#[derive(Deserialize)]
+pub struct SlipsParams {
+    period: String,
+    date: String,
+    /// "cash", "promptpay", or empty for both.
+    #[serde(default)]
+    method: String,
+    #[serde(default)]
+    page: i64,
+}
+
+fn slip_json(row: SlipRow, bill: &crate::bill::BillSettings) -> Value {
+    let (order_id, queue_no, amount, verified, payer, bank, reference, items, at, method, received) =
+        row;
+    json!({
+        "order_id": order_id,
+        "queue_label": queue_no.map(|no| bill.queue_label(no)),
+        "amount_satang": amount,
+        "verified": verified == 1,
+        "payer_name": payer,
+        "bank": bank,
+        "reference": reference,
+        "items": serde_json::from_str::<Value>(&items).unwrap_or_else(|_| json!([])),
+        "paid_at": at,
+        "method": method,
+        "cash_received_satang": received,
+    })
+}
+
+/// One page of the period's payments (cash and PromptPay), newest first: the slip (payer, bank,
+/// reference, what was bought), with the counts and sums the filter chips show. Kept in
+/// `payment_slips`, so past days stay available.
 async fn slips(
     pool: &SqlitePool,
     shop_id: i64,
     range: &Range,
     bill: &crate::bill::BillSettings,
-) -> Result<Vec<Value>> {
+    method: &str,
+    page: i64,
+) -> Result<Value> {
     let (from, to) = range.utc_bounds();
-    let sql = format!(
+    let sums: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT method, COUNT(*), COALESCE(SUM(amount_satang), 0) FROM payment_slips \
+         WHERE shop_id = ? AND method IN ('promptpay', 'cash') AND paid_at >= ? AND paid_at < ? \
+         GROUP BY method",
+    )
+    .bind(shop_id)
+    .bind(&from)
+    .bind(&to)
+    .fetch_all(pool)
+    .await?;
+    let of = |name: &str| {
+        sums.iter()
+            .find(|(m, _, _)| m == name)
+            .map_or((0, 0), |(_, n, sum)| (*n, *sum))
+    };
+    let (cash, promptpay) = (of("cash"), of("promptpay"));
+    let (total, sum) = match method {
+        "cash" => cash,
+        "promptpay" => promptpay,
+        _ => (cash.0 + promptpay.0, cash.1 + promptpay.1),
+    };
+    let rows: Vec<SlipRow> = sqlx::query_as(
         "SELECT order_id, queue_no, amount_satang, verified, payer_name, bank, external_id, items, \
-         strftime('%Y-%m-%d %H:%M:%S', paid_at, '+{BANGKOK_OFFSET_HOURS} hours'), method, \
-         cash_received_satang \
+         strftime('%Y-%m-%d %H:%M:%S', paid_at, '+' || ? || ' hours'), method, cash_received_satang \
          FROM payment_slips WHERE shop_id = ? AND method IN ('promptpay', 'cash') \
-         AND paid_at >= ? AND paid_at < ? ORDER BY paid_at DESC, id DESC LIMIT {SLIPS_LIMIT}"
-    );
-    let rows: Vec<SlipRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
-        .bind(shop_id)
-        .bind(&from)
-        .bind(&to)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(
-                order_id,
-                queue_no,
-                amount,
-                verified,
-                payer,
-                bank,
-                reference,
-                items,
-                at,
-                method,
-                received,
-            )| {
-                json!({
-                    "order_id": order_id,
-                    "queue_label": queue_no.map(|no| bill.queue_label(no)),
-                    "amount_satang": amount,
-                    "verified": verified == 1,
-                    "payer_name": payer,
-                    "bank": bank,
-                    "reference": reference,
-                    "items": serde_json::from_str::<Value>(&items).unwrap_or_else(|_| json!([])),
-                    "paid_at": at,
-                    "method": method,
-                    "cash_received_satang": received,
-                })
-            },
+         AND (? = '' OR method = ?) AND paid_at >= ? AND paid_at < ? \
+         ORDER BY paid_at DESC, id DESC LIMIT ? OFFSET ?",
+    )
+    .bind(BANGKOK_OFFSET_HOURS)
+    .bind(shop_id)
+    .bind(method)
+    .bind(method)
+    .bind(&from)
+    .bind(&to)
+    .bind(SLIPS_PER_PAGE)
+    .bind(page * SLIPS_PER_PAGE)
+    .fetch_all(pool)
+    .await?;
+    Ok(json!({
+        "rows": rows.into_iter().map(|row| slip_json(row, bill)).collect::<Vec<_>>(),
+        "page": page,
+        "per_page": SLIPS_PER_PAGE,
+        "total": total,
+        "sum_satang": sum,
+        "counts": { "all": cash.0 + promptpay.0, "cash": cash.0, "promptpay": promptpay.0 },
+    }))
+}
+
+/// The slips card of the dashboard, one page at a time.
+pub async fn slips_page(
+    _admin: Admin,
+    State(state): State<AppState>,
+    Query(params): Query<SlipsParams>,
+) -> ApiResult<Json<Value>> {
+    let range =
+        Range::parse(&params.period, &params.date).ok_or(ApiError::BadRequest("ช่วงเวลาไม่ถูกต้อง"))?;
+    let method = match params.method.as_str() {
+        "" | "all" => "",
+        "cash" => "cash",
+        "promptpay" => "promptpay",
+        _ => return Err(ApiError::BadRequest("วิธีรับเงินไม่ถูกต้อง")),
+    };
+    let page = params.page.clamp(0, SLIPS_MAX_PAGE);
+    Ok(Json(
+        slips(
+            &state.pool,
+            state.shop.id,
+            &range,
+            &state.bill(),
+            method,
+            page,
         )
-        .collect())
+        .await?,
+    ))
 }
 
 pub async fn data(
@@ -573,7 +637,6 @@ pub async fn data(
     let range = range_of(&params)?;
     let now = chrono::Utc::now().naive_utc();
     let mut body = build(&state.pool, state.shop.id, &range, now).await?;
-    body["slips"] = json!(slips(&state.pool, state.shop.id, &range, &state.bill()).await?);
     let (from, to) = range.utc_bounds();
     body["audit"] = crate::audit::for_period(&state.pool, state.shop.id, &from, &to).await?;
     Ok(Json(body))

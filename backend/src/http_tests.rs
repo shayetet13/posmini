@@ -473,9 +473,9 @@ async fn a_payment_verified_by_the_bot_pays_the_order_and_keeps_its_slip() {
         .format("%Y-%m-%d")
         .to_string();
     let slips = client
-        .get(&format!("/api/dashboard?period=day&date={today}"))
+        .get(&format!("/api/dashboard/slips?period=day&date={today}"))
         .await
-        .json()["slips"]
+        .json()["rows"]
         .clone();
     assert_eq!(slips[0]["verified"], true);
     assert_eq!(slips[0]["bank"], "kbank");
@@ -577,7 +577,7 @@ async fn a_payment_leaves_a_slip_that_outlives_the_orders() {
     let today = (chrono::Utc::now() + chrono::Duration::hours(7))
         .format("%Y-%m-%d")
         .to_string();
-    let dashboard = format!("/api/dashboard?period=day&date={today}");
+    let dashboard = format!("/api/dashboard/slips?period=day&date={today}");
 
     let order = client
         .post(
@@ -590,7 +590,7 @@ async fn a_payment_leaves_a_slip_that_outlives_the_orders() {
     // A cash sale leaves a slip at once (with what was handed over); the PromptPay one only
     // once it is paid.
     let cash = client.cash_order(product, Some(100_000)).await.json();
-    let first = client.get(&dashboard).await.json()["slips"].clone();
+    let first = client.get(&dashboard).await.json()["rows"].clone();
     let first = first.as_array().unwrap();
     assert_eq!(first.len(), 1, "the unpaid QR order has no slip yet");
     assert_eq!(first[0]["method"], "cash");
@@ -603,7 +603,7 @@ async fn a_payment_leaves_a_slip_that_outlives_the_orders() {
         .await;
     assert_eq!(paid.status, StatusCode::OK, "{}", paid.text());
 
-    let slips = client.get(&dashboard).await.json()["slips"].clone();
+    let slips = client.get(&dashboard).await.json()["rows"].clone();
     let slips = slips.as_array().unwrap();
     assert_eq!(slips.len(), 2);
     assert_eq!(slips[0]["method"], "promptpay", "newest first");
@@ -625,11 +625,84 @@ async fn a_payment_leaves_a_slip_that_outlives_the_orders() {
         .await;
     assert_eq!(reset.status, StatusCode::OK);
     assert_eq!(
-        client.get(&dashboard).await.json()["slips"]
+        client.get(&dashboard).await.json()["rows"]
             .as_array()
             .unwrap()
             .len(),
         2
+    );
+}
+
+#[tokio::test]
+async fn slips_come_ten_to_a_page_newest_first_with_counts_for_the_filters() {
+    let mut client = Client::new("slips_paged", false).await;
+    client.login().await;
+    let product = client.first_product().await;
+    let today = today_bangkok();
+    let url = |extra: &str| format!("/api/dashboard/slips?period=day&date={today}{extra}");
+
+    for _ in 0..12 {
+        let sale = client.cash_order(product, None).await;
+        assert_eq!(sale.status, StatusCode::OK, "{}", sale.text());
+    }
+    let qr = client
+        .post(
+            "/api/orders",
+            json!({ "method": "promptpay", "items": [{ "product_id": product, "qty": 1 }] }),
+        )
+        .await
+        .json();
+    client
+        .post(&format!("/api/orders/{}/confirm", qr["id"]), json!({}))
+        .await;
+
+    let first = client.get(&url("")).await.json();
+    assert_eq!(first["rows"].as_array().unwrap().len(), 10, "ten to a page");
+    assert_eq!(first["rows"][0]["method"], "promptpay", "newest first");
+    assert_eq!(first["rows"][0]["queue_label"], "A013");
+    assert_eq!(first["counts"]["all"], 13);
+    assert_eq!(first["counts"]["cash"], 12);
+    assert_eq!(first["counts"]["promptpay"], 1);
+    assert_eq!(first["total"], 13);
+
+    let second = client.get(&url("&page=1")).await.json();
+    assert_eq!(second["rows"].as_array().unwrap().len(), 3, "the rest");
+    assert_eq!(second["rows"][2]["queue_label"], "A001", "oldest last");
+
+    let cash = client.get(&url("&method=cash")).await.json();
+    assert_eq!(cash["total"], 12);
+    assert_eq!(cash["rows"].as_array().unwrap().len(), 10);
+    assert!(
+        cash["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["method"] == "cash"),
+        "only cash on the cash filter"
+    );
+    assert_eq!(
+        cash["counts"]["all"], 13,
+        "the chips still show every count"
+    );
+    let only_qr = client.get(&url("&method=promptpay")).await.json();
+    assert_eq!(only_qr["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(only_qr["sum_satang"], qr["total_satang"]);
+
+    let beyond = client.get(&url("&page=50")).await.json();
+    assert!(
+        beyond["rows"].as_array().unwrap().is_empty(),
+        "past the end is empty, not an error"
+    );
+    assert_eq!(
+        client.get(&url("&method=bitcoin")).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        client
+            .get("/api/dashboard/slips?period=week&date=2026-11-01")
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
     );
 }
 

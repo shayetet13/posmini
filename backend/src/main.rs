@@ -70,6 +70,7 @@ fn router(state: AppState) -> Router {
         .route("/logout", post(auth::logout))
         .route("/api/dashboard", get(dashboard::data))
         .route("/api/dashboard/export", get(dashboard::export))
+        .route("/api/dashboard/slips", get(dashboard::slips_page))
         .route("/img/{id}", get(admin::image))
         .route(
             "/api/products",
