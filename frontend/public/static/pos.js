@@ -475,9 +475,20 @@
     try { state.printq = await api('GET', '/api/print/queue'); renderPrintq(); } catch (_) { /* printing is optional */ }
   }
 
+  // Several live events in a row (a rush) ask for one reload, plus one more if something came in
+  // meanwhile, instead of a full download and redraw for each.
+  let ordersLoading = false;
+  let ordersAgain = false;
   async function loadOrders() {
-    try { state.orders = await api('GET', '/api/orders/active'); } catch (err) { toast(err.message); return; }
-    renderOrders();
+    if (ordersLoading) { ordersAgain = true; return; }
+    ordersLoading = true;
+    try {
+      do {
+        ordersAgain = false;
+        try { state.orders = await api('GET', '/api/orders/active'); } catch (err) { toast(err.message); return; }
+        renderOrders();
+      } while (ordersAgain);
+    } finally { ordersLoading = false; }
   }
 
   // Settings can change on another screen, so ask again each time the payment box opens.
@@ -804,18 +815,19 @@
 
   async function init() {
     $('#today').textContent = new Date().toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    await loadProducts();
-    await loadOrders();
+    // Each answer takes a round trip; on a weak connection asking one by one added up to seconds.
+    const printSettings = api('GET', '/api/print/settings').catch(() => null);
+    loadPrintq();
+    refreshDisplays();
+    await Promise.all([loadProducts(), loadOrders()]);
     pushCart();
-    try {
-      const ps = await api('GET', '/api/print/settings');
+    const ps = await printSettings;
+    if (ps) {
       state.printReady = ps.ready;
       state.printMode = ps.mode;
       paintStation();
       renderOrders();
-    } catch (_) { /* printing is optional */ }
-    loadPrintq();
-    refreshDisplays();
+    }
   }
 
   document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));

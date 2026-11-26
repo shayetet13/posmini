@@ -543,7 +543,12 @@
   }
 
   function setupInstall() {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => { /* needs https; fine without */ });
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => { /* needs https; fine without */ });
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        if (e.data && e.data.type === 'updated') toast('มีเวอร์ชันใหม่แล้ว\nรีเฟรชหน้านี้ (หรือเปิดใหม่) เพื่อใช้เวอร์ชันล่าสุด');
+      });
+    }
     const offered = INSTALL_PAGES.includes(location.pathname) || location.pathname.startsWith('/display/');
     if (!offered || isStandalone()) return;
     // Android / desktop Chrome and Edge: the browser tells us the site can be installed.

@@ -1031,11 +1031,15 @@
 
   async function init() {
     render();
-    try { await loadProducts(); } catch (err) { toast(err.message); }
-    try { state.settings = await api('GET', '/api/settings'); } catch (err) { toast(err.message); }
-    try { state.print = await api('GET', '/api/print/settings'); } catch (err) { toast(err.message); }
-    try { state.bill = await api('GET', '/api/bill/settings'); } catch (err) { toast(err.message); }
-    try { state.line = await api('GET', '/api/settings/line'); } catch (err) { toast(err.message); }
+    // Side by side: one after another, each waited a full round trip.
+    const quiet = (promise, then) => promise.then(then, (err) => toast(err.message));
+    await Promise.all([
+      loadProducts().catch((err) => toast(err.message)),
+      quiet(api('GET', '/api/settings'), (v) => { state.settings = v; }),
+      quiet(api('GET', '/api/print/settings'), (v) => { state.print = v; }),
+      quiet(api('GET', '/api/bill/settings'), (v) => { state.bill = v; }),
+      quiet(api('GET', '/api/settings/line'), (v) => { state.line = v; }),
+    ]);
     if (state.tab === 'print') loadTargets(false);
     if (state.tab === 'staff') loadUsers();
     if (state.tab === 'reset') loadBackups();

@@ -35,6 +35,8 @@
 		respond "ok" 200
 	}
 	handle @backend {
+		@json path /api/* /shop.js
+		encode @json zstd gzip
 		reverse_proxy {$BACKEND_URL:http://backend.railway.internal:8080} {
 			flush_interval -1
 		}

@@ -66,11 +66,14 @@
   async function load() {
     const seq = ++state.seq;
     try {
-      const data = await api('GET', '/api/dashboard?period=' + state.period + '&date=' + keyOf(state.period, state.date));
+      const [data, closes] = await Promise.all([
+        api('GET', '/api/dashboard?period=' + state.period + '&date=' + keyOf(state.period, state.date)),
+        api('GET', '/api/day/closes').catch(() => null),
+      ]);
       if (seq !== state.seq) return;
       state.data = data;
       state.error = null;
-      state.closes = await api('GET', '/api/day/closes').catch(() => state.closes);
+      if (closes) state.closes = closes;
     } catch (err) {
       if (seq !== state.seq) return;
       state.error = err.message;
