@@ -63,7 +63,7 @@
     const code = h('div', { class: 'thaiqr-code' });
     code.innerHTML = svg;
     code.append(
-      h('img', { class: 'thaiqr-mark', src: '/static/brand-thaiqr-mark.png', alt: '' }),
+      h('img', { class: 'thaiqr-mark', src: '/static/brand-thaiqr-mark.png?v=2', alt: '' }),
       h('div', { class: 'thaiqr-expired' }, h('b', null, 'QR หมดอายุ'), h('span', null, 'สแกนจ่ายไม่ได้แล้ว')));
     const card = h('div', { class: 'thaiqr' },
       h('div', { class: 'thaiqr-head' }, h('img', { src: '/static/brand-thaiqr-logo.png', alt: 'Thai QR Payment' })),
