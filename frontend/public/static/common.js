@@ -560,9 +560,6 @@
       // compete with the page's own first requests on a weak connection.
       const register = () => setTimeout(() => navigator.serviceWorker.register('/sw.js').catch(() => { /* needs https; fine without */ }), 2000);
       if (document.readyState === 'complete') register(); else window.addEventListener('load', register, { once: true });
-      navigator.serviceWorker.addEventListener('message', (e) => {
-        if (e.data && e.data.type === 'updated') toast('มีเวอร์ชันใหม่แล้ว\nรีเฟรชหน้านี้ (หรือเปิดใหม่) เพื่อใช้เวอร์ชันล่าสุด');
-      });
     }
     const offered = INSTALL_PAGES.includes(location.pathname) || location.pathname.startsWith('/display/');
     if (!offered || isStandalone()) return;

@@ -57,9 +57,11 @@ const network = {
   },
 };
 
-const told = [];
 const waits = [];
 const settle = () => Promise.all(waits.splice(0));
+
+const timers = [];
+const fire = () => timers.splice(0).forEach((fn) => fn());
 
 function boot() {
   caches.stores.clear();
@@ -69,16 +71,16 @@ function boot() {
   network.version = 1;
   network.date = null;
   network.hang = null;
-  told.length = 0;
   waits.length = 0;
+  timers.length = 0;
   const handlers = {};
   const self = {
     location: { origin: ORIGIN },
     addEventListener: (type, fn) => { handlers[type] = fn; },
     skipWaiting: async () => {},
-    clients: { claim: async () => {}, matchAll: async () => [{ postMessage: (m) => told.push(m) }] },
+    clients: { claim: async () => {} },
   };
-  vm.runInNewContext(SOURCE, { self, caches, fetch: (r) => network.fetch(r), Request, Response, URL, Promise, Set, setTimeout, clearTimeout, Error });
+  vm.runInNewContext(SOURCE, { self, caches, fetch: (r) => network.fetch(r), Request, Response, URL, Promise, Set, setTimeout: (fn) => timers.push(fn), clearTimeout: () => {}, Error });
   return handlers;
 }
 
@@ -128,25 +130,43 @@ test('live data is never touched: API, live updates, other sites and non-GET go 
   assert.deepEqual(network.hits, [], 'the worker itself made no requests for any of these');
 });
 
-test('a page opens from the network the first time, and from the saved copy when offline', async () => {
+test('a page opens from the network when online, and from the saved copy when offline', async () => {
   const handlers = boot();
   const online = await ask(handlers, ORIGIN + '/m/abc', { mode: 'navigate' });
   assert.equal(await online.text(), 'body of /m/abc v1');
-  await settle();
+  await new Promise((resolve) => setTimeout(resolve, 10)); // the copy is saved in the background
   network.online = false;
   const offline = await ask(handlers, ORIGIN + '/m/abc', { mode: 'navigate' });
   assert.equal(await offline.text(), 'body of /m/abc v1', 'last good copy');
 });
 
-test('a saved page opens at once even when the connection is very slow', async () => {
+test('pages and scripts are asked from the network first, so old and new files never mix', async () => {
   const handlers = boot();
   await lifecycle(handlers, 'install');
+  network.version = 2;
+  const page = await ask(handlers, ORIGIN + '/pos', { mode: 'navigate' });
+  const script = await ask(handlers, ORIGIN + '/static/pos.js');
+  assert.equal(await page.text(), 'body of /pos v2', 'not the copy saved at install');
+  assert.equal(await script.text(), 'body of /static/pos.js v2');
+});
+
+test('a connection too slow to wait for falls back to the saved copy, and saves the late answer', async () => {
+  const handlers = boot();
+  await lifecycle(handlers, 'install');
+  network.version = 2;
   let release;
   network.hang = new Promise((resolve) => { release = resolve; });
-  const answer = await ask(handlers, ORIGIN + '/pos', { mode: 'navigate' });
-  assert.equal(await answer.text(), 'body of /pos v1', 'did not wait for the network');
+  const pending = ask(handlers, ORIGIN + '/static/pos.js');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  fire(); // the waiting limit passes
+  const answer = await pending;
+  assert.equal(await answer.text(), 'body of /static/pos.js v1', 'the saved copy');
   release();
   await settle();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  network.online = false;
+  const later = await ask(handlers, ORIGIN + '/static/pos.js');
+  assert.equal(await later.text(), 'body of /static/pos.js v2', 'the late answer was kept');
 });
 
 test('a page is still saved when the page has already read it before the cache opens', async () => {
@@ -154,7 +174,6 @@ test('a page is still saved when the page has already read it before the cache o
   caches.slow = 5;
   const online = await ask(handlers, ORIGIN + '/m/abc', { mode: 'navigate' });
   assert.equal(await online.text(), 'body of /m/abc v1'); // the body is used up here
-  await settle();
   await new Promise((resolve) => setTimeout(resolve, 30));
   caches.slow = 0;
   network.online = false;
@@ -170,61 +189,14 @@ test('a page never seen before shows the offline page when there is no connectio
   assert.equal(await answer.text(), 'body of /offline.html v1');
 });
 
-test('a script is answered from the copy and refreshed behind it; the next visit has the new one', async () => {
-  const handlers = boot();
-  await ask(handlers, ORIGIN + '/static/zzz.js');
-  await settle();
-  network.version = 2;
-  network.hits = [];
-  const first = await ask(handlers, ORIGIN + '/static/zzz.js');
-  assert.equal(await first.text(), 'body of /static/zzz.js v1', 'the saved copy, with no waiting');
-  await settle();
-  assert.deepEqual(network.hits, ['/static/zzz.js'], 'refreshed from the network behind it');
-  const second = await ask(handlers, ORIGIN + '/static/zzz.js');
-  assert.equal(await second.text(), 'body of /static/zzz.js v2', 'the next visit uses the new file');
-});
-
-test('a copy saved a moment ago is used as it is, with no request behind it', async () => {
-  const handlers = boot();
-  network.date = new Date().toUTCString();
-  await ask(handlers, ORIGIN + '/static/zzz.js');
-  await settle();
-  network.hits = [];
-  const again = await ask(handlers, ORIGIN + '/static/zzz.js');
-  assert.equal(await again.text(), 'body of /static/zzz.js v1');
-  await settle();
-  assert.deepEqual(network.hits, [], 'young enough: nothing asked of the network');
-  network.date = new Date(Date.now() - 10 * 60 * 1000).toUTCString();
-  await ask(handlers, ORIGIN + '/static/old.js');
-  await settle();
-  network.hits = [];
-  await ask(handlers, ORIGIN + '/static/old.js');
-  await settle();
-  assert.deepEqual(network.hits, ['/static/old.js'], 'an old copy is refreshed behind the answer');
-});
-
-test('the open page is told when a newer version of a file arrived', async () => {
-  const handlers = boot();
-  await ask(handlers, ORIGIN + '/static/zzz.js');
-  await settle();
-  await ask(handlers, ORIGIN + '/static/zzz.js');
-  await settle();
-  assert.deepEqual(told, [], 'same file again: nothing to tell');
-  network.version = 2;
-  await ask(handlers, ORIGIN + '/static/zzz.js');
-  await settle();
-  assert.deepEqual(JSON.parse(JSON.stringify(told)), [{ type: 'updated' }], 'the page is told once');
-});
-
-test('the web fonts are kept so a slow connection does not hold the page up for them', async () => {
+test('the web fonts are served from the saved copy', async () => {
   const handlers = boot();
   const css = 'https://fonts.googleapis.com/css2?family=Prompt';
-  const first = await ask(handlers, css);
-  assert.ok(first, 'the worker handles it');
-  await settle();
-  network.hang = new Promise(() => {});
-  const again = await ask(handlers, css);
-  assert.ok(again, 'answered from the copy while the network hangs');
+  assert.ok(await ask(handlers, css), 'the worker handles it');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  network.hits = [];
+  assert.ok(await ask(handlers, css));
+  assert.deepEqual(network.hits, [], 'no request the second time');
 });
 
 test('pictures are served from the cache after the first visit', async () => {

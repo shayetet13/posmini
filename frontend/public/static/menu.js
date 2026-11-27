@@ -101,7 +101,7 @@
   $('#open').addEventListener('click', () => { renderCart(); $('#cartmodal').classList.add('open'); });
   $('#cartmodal').addEventListener('click', (e) => { if (e.target.id === 'cartmodal') e.target.classList.remove('open'); });
 
-  $('#grid').replaceChildren(...PM.skeleton.tiles(6));
+  if (PM.skeleton) $('#grid').replaceChildren(...PM.skeleton.tiles(6));
   api('GET', '/api/m/' + window.SLUG + '/products')
     .then((list) => {
       state.products = list;

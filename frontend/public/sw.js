@@ -1,31 +1,27 @@
-// Service worker: makes the site installable and keeps the app usable on a weak connection.
+// Service worker: makes the site installable and keeps the app shell usable when the network drops.
 //
-// Pages, scripts and styles are answered from the saved copy at once and refreshed from the
-// network in the background, so moving between screens never waits on the connection. A newer
-// copy is used from the next visit on, and the open page is told that one arrived. The first
-// visit (nothing saved yet) goes to the network. Product pictures and the web fonts are kept too.
-// Live data never is: /api/ and /events/ always go straight to the server, so a stale queue or
-// payment is impossible. The till page itself is kept, so cash sales can go on without a
-// connection (see offlineq.js).
-const VERSION = 'posmini-v2';
+// Pages, scripts and styles are fetched from the network first, so every file of a screen comes
+// from the same version (an old script with a new page breaks buttons). When the connection is
+// down, or slow beyond NETWORK_WAIT_MS, the last saved copy is used instead. Product pictures
+// and the web fonts are served from the saved copy. Live data is never kept: /api/ and /events/
+// always go straight to the server, so a stale queue or payment is impossible. The till page
+// itself is saved, so cash sales can go on without a connection (see offlineq.js).
+const VERSION = 'posmini-v3';
 const APP = VERSION + '-app';
 const OFFLINE_PAGE = '/offline.html';
-// Only the till is saved up front. The other screens are saved the first time they are opened
-// (downloading them all at install competed with the page's own first requests).
-const PAGES = ['/pos'];
 const STATIC = ['app.css', 'common.js', 'calc.js', 'cartmath.js', 'offlineq.js', 'station.js', 'pos.js', 'icon-192.png'];
-// A saved copy younger than this is used as it is, with no request behind it.
-const FRESH_MS = 120000;
+const PAGES = ['/pos'];
 const PRECACHE = [OFFLINE_PAGE, ...PAGES, ...STATIC.map((name) => '/static/' + name)];
 const LIVE = ['/api/', '/events/'];
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
+const NETWORK_WAIT_MS = 3500;
 const MAX_ENTRIES = 120;
 
 self.addEventListener('install', (event) => {
   // One missing file must not stop the install, so each is added on its own.
   event.waitUntil((async () => {
     const cache = await caches.open(APP);
-    await Promise.all(PRECACHE.map((url) => cache.add(url).catch(() => { /* fetched on first use instead */ })));
+    await Promise.all(PRECACHE.map((url) => cache.add(url).catch(() => { /* saved on first use instead */ })));
     await self.skipWaiting();
   })());
 });
@@ -39,66 +35,56 @@ self.addEventListener('activate', (event) => {
   })());
 });
 
-// Saves a copy. The copy is taken right now, before the page starts reading the response:
-// cloning later fails with "body is already used". Only complete answers are kept (not a 206
-// or an error); an opaque one (a cross-origin stylesheet) is kept only when `allowOpaque`.
+// Saves a copy in the background. The copy is taken right now, before the page starts reading
+// the response: cloning later fails with "body is already used". Only complete answers are kept
+// (not a 206 or an error); an opaque one (a cross-origin stylesheet) only when `allowOpaque`.
 function remember(request, response, allowOpaque) {
-  if (!response) return undefined;
-  const keep = response.status === 200 || (allowOpaque && response.type === 'opaque');
-  if (!keep) return undefined;
+  if (!response) return;
+  if (response.status !== 200 && !(allowOpaque && response.type === 'opaque')) return;
   const copy = response.clone();
-  return (async () => {
+  (async () => {
     const cache = await caches.open(APP);
     await cache.put(request, copy);
     const keys = await cache.keys();
     if (keys.length > MAX_ENTRIES) {
-      const keepUrls = new Set(PRECACHE.map((path) => new URL(path, self.location.origin).href));
-      const old = keys.find((key) => !keepUrls.has(key.url));
+      const keep = new Set(PRECACHE.map((path) => new URL(path, self.location.origin).href));
+      const old = keys.find((key) => !keep.has(key.url));
       if (old) await cache.delete(old);
     }
   })().catch(() => { /* a copy that cannot be saved just means no offline copy of this one */ });
 }
 
-async function tellPagesAboutUpdate() {
-  for (const client of await self.clients.matchAll({ type: 'window' })) client.postMessage({ type: 'updated' });
-}
-
-// The saved copy now, the network copy for next time. Without a saved copy the network decides,
-// and if that fails too the offline page stands in for a screen.
-function isFresh(cached) {
-  const stamp = cached && Date.parse(cached.headers.get('date') || '');
-  return Number.isFinite(stamp) && Date.now() - stamp < FRESH_MS;
-}
-
-async function staleWhileRevalidate(event, fallbackPage, allowOpaque) {
-  const { request } = event;
-  const saved = await caches.match(request);
-  if (isFresh(saved)) return saved;
-  const work = []; // saving the copy and the notice finish after the page already has its answer
-  const refresh = fetch(request).then(async (response) => {
-    const before = await caches.match(request);
-    const oldTag = before && before.headers.get('etag');
-    const newTag = response.headers.get('etag');
-    if (oldTag && newTag && oldTag !== newTag) work.push(tellPagesAboutUpdate());
-    work.push(remember(request, response, allowOpaque));
-    return response;
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms);
+    promise.then((value) => { clearTimeout(timer); resolve(value); }, (err) => { clearTimeout(timer); reject(err); });
   });
-  event.waitUntil(refresh.then(() => Promise.all(work), () => { /* offline: the saved copy is all there is */ }));
-  if (saved) return saved;
+}
+
+// Network first; if it fails (or is very slow) and there is a saved copy, use that. A slow
+// answer that arrives afterwards is still saved for next time.
+async function networkFirst(event, fallbackPage) {
+  const { request } = event;
+  const cached = await caches.match(request);
+  const fresh = fetch(request).then((response) => { remember(request, response); return response; });
   try {
-    return await refresh;
+    return await (cached ? withTimeout(fresh, NETWORK_WAIT_MS) : fresh);
   } catch (err) {
+    if (cached) {
+      event.waitUntil(fresh.catch(() => { /* offline: the saved copy is all there is */ }));
+      return cached;
+    }
     const page = fallbackPage && await caches.match(fallbackPage);
     if (page) return page;
     throw err;
   }
 }
 
-async function cacheFirst(request) {
+async function cacheFirst(request, allowOpaque) {
   const cached = await caches.match(request);
   if (cached) return cached;
   const response = await fetch(request);
-  remember(request, response);
+  remember(request, response, allowOpaque);
   return response;
 }
 
@@ -107,7 +93,7 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (FONT_HOSTS.includes(url.hostname)) {
-    event.respondWith(staleWhileRevalidate(event, null, true));
+    event.respondWith(cacheFirst(request, true));
     return;
   }
   if (url.origin !== self.location.origin) return;
@@ -115,10 +101,10 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname === '/sw.js') return;
 
   if (request.mode === 'navigate') {
-    event.respondWith(staleWhileRevalidate(event, OFFLINE_PAGE, false));
+    event.respondWith(networkFirst(event, OFFLINE_PAGE));
   } else if (url.pathname.startsWith('/img/') || /\.(png|jpg|jpeg|webp|svg|ico)$/.test(url.pathname)) {
     event.respondWith(cacheFirst(request));
   } else {
-    event.respondWith(staleWhileRevalidate(event, null, false));
+    event.respondWith(networkFirst(event));
   }
 });

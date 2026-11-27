@@ -198,6 +198,8 @@
       clearCart();
       setTab('menu');
       await loadOrders();
+      // The list may not hold the new order yet (a failed reload): the answer to the sale does.
+      if (!state.orders.some((o) => o.id === order.id)) state.orders = [...state.orders, order];
       if (method === 'promptpay') openPay(order.id);
     } catch (err) {
       if (!OfflineQ.isNoConnection(err)) { toast(err.message); return; }
@@ -475,22 +477,26 @@
     try { state.printq = await api('GET', '/api/print/queue'); renderPrintq(); } catch (_) { /* printing is optional */ }
   }
 
-  // Several live events in a row (a rush) ask for one reload, plus one more if something came in
-  // meanwhile, instead of a full download and redraw for each.
+  // Several live events in a row (a rush) share one reload, plus one more if something came in
+  // meanwhile, instead of a full download and redraw for each. Every caller gets a promise that
+  // settles only after a reload that began after its call: `pay` relies on that to find the order
+  // it has just made.
   let ordersReady = false;
-  let ordersLoading = false;
+  let ordersRun = null;
   let ordersAgain = false;
-  async function loadOrders() {
-    if (ordersLoading) { ordersAgain = true; return; }
-    ordersLoading = true;
-    try {
-      do {
-        ordersAgain = false;
-        try { state.orders = await api('GET', '/api/orders/active'); } catch (err) { toast(err.message); if (!ordersReady) renderOrders(); return; }
-        ordersReady = true;
-        renderOrders();
-      } while (ordersAgain);
-    } finally { ordersLoading = false; }
+  function loadOrders() {
+    if (ordersRun) { ordersAgain = true; return ordersRun; }
+    ordersRun = (async () => {
+      try {
+        do {
+          ordersAgain = false;
+          try { state.orders = await api('GET', '/api/orders/active'); } catch (err) { toast(err.message); if (!ordersReady) renderOrders(); return; }
+          ordersReady = true;
+          renderOrders();
+        } while (ordersAgain);
+      } finally { ordersRun = null; }
+    })();
+    return ordersRun;
   }
 
   // Settings can change on another screen, so ask again each time the payment box opens.
@@ -821,8 +827,9 @@
     // The menu this till saw last time is shown at once; the fresh one replaces it a moment later.
     let saved = null;
     try { saved = JSON.parse(store.getItem(PRODUCTS_KEY) || 'null'); } catch (_) { saved = null; }
-    if (Array.isArray(saved) && saved.length) { state.products = saved; renderChips(); renderGrid(); } else $('#grid').replaceChildren(...PM.skeleton.tiles(8));
-    $('#qlist').replaceChildren(...PM.skeleton.cards(3));
+    // (`PM.skeleton` is checked because a phone may still hold an older common.js for one load.)
+    if (Array.isArray(saved) && saved.length) { state.products = saved; renderChips(); renderGrid(); } else if (PM.skeleton) $('#grid').replaceChildren(...PM.skeleton.tiles(8));
+    if (PM.skeleton) $('#qlist').replaceChildren(...PM.skeleton.cards(3));
     const printSettings = api('GET', '/api/print/settings').catch(() => null);
     loadPrintq();
     refreshDisplays();
